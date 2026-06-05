@@ -495,19 +495,30 @@ const Container = ({ children }) => (
   </div>
 );
 
-const Logo = ({ size = 32 }) => (
-  <div
-    className="rounded-lg bg-stone-900 flex items-center justify-center"
-    style={{ width: size, height: size }}
-  >
-    <div className="grid grid-cols-2 gap-0.5">
-      <div className="w-1.5 h-1.5 bg-white rounded-sm"></div>
-      <div className="w-1.5 h-1.5 bg-white rounded-sm"></div>
-      <div className="w-1.5 h-1.5 bg-white rounded-sm"></div>
-      <div className="w-1.5 h-1.5 bg-white rounded-sm"></div>
+const LOGO_URL = '/logo.png';
+
+const Logo = ({ size = 32 }) => {
+  if (LOGO_URL) {
+    return (
+      <img
+        src={LOGO_URL}
+        alt="ShredSmart logo"
+        width={size}
+        height={size}
+        className="rounded-lg"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+  return (
+    <div
+      className="rounded-lg bg-stone-200 border border-stone-300 flex items-center justify-center"
+      style={{ width: size, height: size }}
+    >
+      <span className="text-stone-400 text-[10px] font-medium">LOGO</span>
     </div>
-  </div>
-);
+  );
+};
 
 const Header = () => (
   <header className="w-full px-6 py-4 flex items-center justify-between border-b border-stone-200 bg-white">
