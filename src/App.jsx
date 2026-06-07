@@ -199,10 +199,32 @@ function genDateAgeWeeks(genDate) {
 // =====================================================
 // MACROMETRIC CODE — encoder (schema MM1)
 // The handoff to MealFrame™, mirroring the SS1 design. Carries MacroMetric's
-// COMPUTED outputs (which don't exist in the SS1 code). Same base64url +
-// 2-char checksum so a corrupted code fails loudly. MealFrame decodes this.
-// Contract: MM1-<base64url(payload)>-<checksum>
-// payload = units | direction | targetKcal | protein | fat | carbs | genDate
+// COMPUTED outputs (target/macros/fiber/maintenance, which don't exist in SS1)
+// PLUS a pass-through of the body/strength fields SS1 already supplied
+// (tier/subBracket/weight/height) so MealFrame never has to re-decode SS1.
+// Same base64url + 2-char checksum so a corrupted code fails loudly.
+//
+// Contract (13 fields, '|'-joined — MealFrame's decoder MUST mirror EXACTLY):
+//   1  units        'i' | 'm'              (display only)
+//   2  direction    'c' (cut) | 'b' (bulk)
+//   3  targetKcal   int
+//   4  protein      int  g
+//   5  fat          int  g
+//   6  carbs        int  g
+//   7  fiber        int  g    (minimum target)
+//   8  tier         int  0-3  (0 novice … 3 advanced — matches SS1 tierIdx)
+//   9  subBracket   int  0|1|2 (low/mid/high — matches SS1 subBracket)
+//   10 weight       kg, ≤1 decimal (pass-through from SS1 / latest check-in)
+//   11 height       int cm        (pass-through from SS1)
+//   12 maintenance  int kcal      (computed here from age/activity)
+//   13 genDate      YYYYMMDD      (staleness)
+// Wrapped: MM1-<base64url(payload)>-<checksum>
+//
+// The SAME builder is used by both the setup-flow results screen AND the
+// check-in result screen. The check-in constructs an object with these exact
+// field names (updated target/macros + latest weight, pass-through strength
+// fields from the ingested MM1 code) and hands it here. One encoder, one
+// contract, no drift.
 // =====================================================
 
 const MM_SCHEMA_PREFIX = 'MM1';
@@ -219,17 +241,88 @@ function genDateStr(d = new Date()) {
 }
 
 function buildMacroMetricCode(result, units) {
+  const tierIdx = TIER_NAME.indexOf(result.tier); // word → index; mirrors SS1
   const fields = [
-    units === 'imperial' ? 'i' : 'm',           // units (display)
-    result.direction === 'cut' ? 'c' : 'b',     // direction
-    String(Math.round(result.target)),          // target kcal
-    String(Math.round(result.protein)),         // protein g
-    String(Math.round(result.fat)),             // fat g
-    String(Math.round(result.carbs)),           // carbs g
-    genDateStr(),                               // genDate (staleness)
+    units === 'imperial' ? 'i' : 'm',             // 1  units (display)
+    result.direction === 'cut' ? 'c' : 'b',       // 2  direction
+    String(Math.round(result.target)),            // 3  target kcal
+    String(Math.round(result.protein)),           // 4  protein g
+    String(Math.round(result.fat)),               // 5  fat g
+    String(Math.round(result.carbs)),             // 6  carbs g
+    String(Math.round(result.fiber)),             // 7  fiber g
+    String(tierIdx >= 0 ? tierIdx : 0),           // 8  tier index 0-3
+    String(result.subBracket),                    // 9  subBracket 0/1/2
+    String(Math.round(result.weight * 10) / 10),  // 10 weight kg (≤1 dp)
+    String(Math.round(result.height)),            // 11 height cm
+    String(Math.round(result.maintenance)),       // 12 maintenance kcal
+    genDateStr(),                                 // 13 genDate
   ];
   const payload = fields.join('|');
   return `${MM_SCHEMA_PREFIX}-${base64urlEncode(payload)}-${checksum2(payload)}`;
+}
+
+// =====================================================
+// MACROMETRIC CODE — decoder (schema MM1)
+// Mirror of buildMacroMetricCode. Used by the CHECK-IN flow so a returning user
+// pastes the MM1 code from their plan (or their last check-in) and we recover
+// tier/subBracket/height/maintenance — the fields the check-in form never
+// collects but a complete output code needs. Symmetric with the SS1 decoder.
+//
+// Returns { ok:true, data } or { ok:false, error } where error is one of:
+// 'empty' | 'format' | 'version' | 'wrongcode' | 'corrupt' | 'checksum' | 'fields'
+// =====================================================
+
+function decodeMacroMetricCode(raw) {
+  if (!raw || !raw.trim()) return { ok: false, error: 'empty' };
+  const parts = raw.trim().split('-');
+  if (parts.length !== 3) return { ok: false, error: 'format' };
+  const [prefix, body, checksum] = parts;
+
+  if (prefix !== MM_SCHEMA_PREFIX) {
+    // Newer MacroMetric schema (MM2…) → ask for a re-run.
+    if (/^MM\d+$/i.test(prefix)) return { ok: false, error: 'version' };
+    // They pasted a PhysiquePlan code by mistake.
+    if (/^SS\d+$/i.test(prefix)) return { ok: false, error: 'wrongcode' };
+    return { ok: false, error: 'format' };
+  }
+
+  let payload;
+  try {
+    payload = base64urlDecode(body);
+  } catch {
+    return { ok: false, error: 'corrupt' };
+  }
+  if (checksum2(payload) !== checksum) return { ok: false, error: 'checksum' };
+
+  const f = payload.split('|');
+  // <13 catches the legacy 7-field MM1 too → handled as 'fields' (re-run).
+  if (f.length < 13) return { ok: false, error: 'fields' };
+
+  const tierIdx = parseInt(f[7], 10);
+  const data = {
+    units: f[0] === 'i' ? 'imperial' : 'metric', // 1
+    direction: f[1] === 'c' ? 'cut' : 'bulk',     // 2
+    target: parseInt(f[2], 10),                   // 3
+    protein: parseInt(f[3], 10),                  // 4
+    fat: parseInt(f[4], 10),                      // 5
+    carbs: parseInt(f[5], 10),                    // 6
+    fiber: parseInt(f[6], 10),                    // 7
+    tier: TIER_NAME[tierIdx] ?? 'novice',         // 8
+    tierIdx,
+    subBracket: parseInt(f[8], 10),               // 9
+    weight: parseFloat(f[9]),                     // 10 kg
+    height: parseInt(f[10], 10),                  // 11 cm
+    maintenance: parseInt(f[11], 10),             // 12 kcal
+    genDate: f[12],                               // 13
+  };
+
+  if (
+    isNaN(data.target) || isNaN(data.protein) ||
+    isNaN(data.weight) || isNaN(data.height) || isNaN(data.subBracket)
+  ) {
+    return { ok: false, error: 'fields' };
+  }
+  return { ok: true, data };
 }
 
 // =====================================================
@@ -468,6 +561,47 @@ function buildPrescription(data) {
 }
 
 // =====================================================
+// CHECK-IN → MM1 CODE
+// A check-in can produce a COMPLETE MM1 code only when it was started from an
+// MM1 code (so tier/subBracket/height/maintenance are known). This builds the
+// updated plan object and hands it to the one shared encoder.
+//   - target/protein come from the check-in result (newTarget/newProtein)
+//   - fat/carbs/fiber are recomputed deterministically from the new target,
+//     exactly the way MacroMetric built them originally (so a no-change result
+//     reproduces the original macros, and a change reflects the new target)
+//   - weight is the user's LATEST measured weight from this check-in
+//   - tier/subBracket/height/maintenance pass through from the ingested code
+//     (maintenance is carried forward unchanged — the check-in has no age/
+//     activity to recompute it, and the check-in math never uses it; the
+//     freshly-adjusted TARGET is what matters)
+// Returns null if there's no ingested plan (manual-entry check-in) — we can't
+// fabricate strength data.
+// =====================================================
+
+function buildCheckInCode(result, direction, ingestedPlan, units) {
+  if (!ingestedPlan) return null;
+  const target = result.newTarget;
+  const protein = result.newProtein;
+  const fat = calculateFat(target, direction);
+  const carbs = calculateCarbs(target, protein, fat);
+  const fiber = calculateFiber(target);
+  const plan = {
+    direction,
+    target,
+    protein,
+    fat,
+    carbs,
+    fiber,
+    tier: ingestedPlan.tier,
+    subBracket: ingestedPlan.subBracket,
+    weight: result.currentWeight ?? ingestedPlan.weight, // latest measured weight
+    height: ingestedPlan.height,
+    maintenance: ingestedPlan.maintenance,
+  };
+  return buildMacroMetricCode(plan, units);
+}
+
+// =====================================================
 // FORMAT HELPERS
 // =====================================================
 
@@ -646,6 +780,17 @@ const CODE_ERROR_COPY = {
   format: "That doesn't look like a ShredSmart code. It should start with “SS1-”. Copy it again from your PhysiquePlan™ blueprint.",
   fields: "That code is incomplete. Re-copy the full code from your PhysiquePlan™ blueprint.",
   empty: "Paste your code to continue.",
+};
+
+// Error copy for the MM1 code the CHECK-IN flow ingests.
+const MM_CODE_ERROR_COPY = {
+  version: "This code is from a newer version of MacroMetric™. Re-run your MacroMetric plan to get a compatible code.",
+  wrongcode: "That looks like a PhysiquePlan™ code (SS1), not a MacroMetric™ code. Paste the MacroMetric code from the end of your plan or your last check-in.",
+  checksum: "That code doesn't look right — a character may be off. Copy it again from MacroMetric™ (end of your plan, or your last check-in result).",
+  corrupt: "That code couldn't be read. Copy it again from MacroMetric™.",
+  format: "That doesn't look like a MacroMetric™ code. It should start with “MM1-”.",
+  fields: "That code is incomplete or from an older version of MacroMetric™. Re-run your MacroMetric plan to get a current code.",
+  empty: "Paste your MacroMetric™ code to continue.",
 };
 
 const PLAN_URL = 'https://plan.raduantoniu.com';
@@ -1167,7 +1312,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
         {/* MealFrame code — paste fallback, mirrors PhysiquePlan's handoff */}
         <div className="bg-stone-900 rounded-xl p-5 text-center">
           <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your MacroMetric™ Code</h4>
-          <p className="text-stone-400 text-xs mt-1">MealFrame™ uses this to pick up your targets — no re-entering numbers.</p>
+          <p className="text-stone-400 text-xs mt-1">MealFrame™ uses this to pick up your targets — no re-entering numbers. Keep it for your check-ins, too.</p>
           <div className="mt-3 bg-stone-800 border border-stone-700 rounded-lg px-3 py-3">
             <code className="text-orange-300 text-xs break-all leading-relaxed">{mealFrameCode}</code>
           </div>
@@ -1200,7 +1345,69 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
 };
 
 // =====================================================
-// CHECK-IN: cut/bulk selection
+// CHECK-IN: paste your MM1 code (primary entry)
+// Ingesting the MM1 code is what lets the check-in emit a COMPLETE MM1 code at
+// the end (it recovers tier/subBracket/height/maintenance) and pre-fills the
+// form. Manual entry stays available as a fallback, but can't produce a code.
+// =====================================================
+
+const CheckInCodeScreen = ({ onDecoded, onManual, onBack }) => {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState(null);
+
+  const submit = () => {
+    const res = decodeMacroMetricCode(code);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    onDecoded(res.data);
+  };
+
+  return (
+    <Card>
+      <BackButton onClick={onBack} />
+      <div>
+        <span className="text-xs font-semibold text-stone-400 tracking-widest uppercase">Check-in</span>
+        <h2 className="mt-2 text-2xl font-bold text-stone-900">Paste your MacroMetric™ code</h2>
+        <p className="text-stone-600 mt-2 text-sm">
+          Use the code from the end of your plan — or from your last check-in. MacroMetric pre-fills your current numbers, so you only enter this period's measurements. If your targets change, you'll get a fresh code to take to MealFrame™.
+        </p>
+
+        <div className="mt-5">
+          <label className="text-sm font-medium text-stone-700">Your MacroMetric™ code</label>
+          <input
+            type="text"
+            value={code}
+            onChange={(e) => { setCode(e.target.value); if (error) setError(null); }}
+            placeholder="MM1-…"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="mt-1 w-full px-4 py-3 rounded-lg border border-stone-200 bg-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500"
+          />
+          {error && (
+            <p className="text-sm text-red-600 mt-2 leading-relaxed">{MM_CODE_ERROR_COPY[error] || MM_CODE_ERROR_COPY.format}</p>
+          )}
+        </div>
+
+        <PrimaryButton onClick={submit} disabled={!code.trim()} className="mt-5">
+          Load my numbers <ArrowRight className="w-4 h-4" />
+        </PrimaryButton>
+
+        <SecondaryButton onClick={onManual} className="mt-2 text-sm">
+          I don't have my code — enter manually
+        </SecondaryButton>
+        <p className="text-xs text-stone-500 text-center mt-3">
+          Manual check-ins still work — they just can't generate a MealFrame™ code.
+        </p>
+      </div>
+    </Card>
+  );
+};
+
+// =====================================================
+// CHECK-IN: cut/bulk selection (manual fallback only — the code carries direction)
 // =====================================================
 
 const CheckInRouterScreen = ({ onSelect, onBack }) => (
@@ -1233,7 +1440,7 @@ const CheckInRouterScreen = ({ onSelect, onBack }) => (
   </Card>
 );
 
-// Units selector — only needed for the check-in flow (no code there).
+// Units selector — only needed for the manual check-in fallback (no code there).
 const UnitsScreen = ({ onSelect, onBack }) => (
   <Card>
     <BackButton onClick={onBack} />
@@ -1263,22 +1470,27 @@ const UnitsScreen = ({ onSelect, onBack }) => (
 
 // =====================================================
 // CUTTING CHECK-IN  (logic untouched — never read archetype)
+// `prefill` (optional) seeds the fields we can recover from the ingested MM1
+// code: current target, protein, height, and the target rate (recomputed from
+// tier/subBracket/weight/height). All editable.
 // =====================================================
 
-const CuttingCheckInScreen = ({ onSubmit, units, onBack }) => {
+const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
   const [tracked, setTracked] = useState(null);
-  const [currentTarget, setCurrentTarget] = useState('');
+  const [currentTarget, setCurrentTarget] = useState(prefill.currentTarget || '');
   const [actualIntake, setActualIntake] = useState('');
   const [bwTwoWeeksAgo, setBwTwoWeeksAgo] = useState('');
   const [bwThisWeek, setBwThisWeek] = useState('');
-  const [targetRate, setTargetRate] = useState('');
-  const [height, setHeight] = useState('');
-  const [proteinTarget, setProteinTarget] = useState('');
+  const [targetRate, setTargetRate] = useState(prefill.targetRate || '');
+  const [height, setHeight] = useState(prefill.height || '');
+  const [proteinTarget, setProteinTarget] = useState(prefill.proteinTarget || '');
 
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [waist2w, setWaist2w] = useState('');
   const [waistNow, setWaistNow] = useState('');
   const [strengthUp, setStrengthUp] = useState(null);
+
+  const isPrefilled = !!prefill.currentTarget;
 
   const unitW = units === 'metric' ? 'kg' : 'lb';
   const unitH = units === 'metric' ? 'cm' : 'in';
@@ -1320,6 +1532,12 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack }) => {
         <p className="text-stone-600 mt-2 text-sm">
           Tell MacroMetric how your last two weeks went. We'll use the trend to decide if your numbers need adjusting.
         </p>
+
+        {isPrefilled && (
+          <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 mt-3">
+            Pre-filled from your MacroMetric™ code — just add this period's numbers below (edit anything that's changed).
+          </p>
+        )}
 
         <div className="space-y-4 mt-5">
           <div>
@@ -1609,108 +1827,20 @@ function processCuttingCheckIn(input, units = 'metric') {
 }
 
 // =====================================================
-// CHECK-IN RESULT SCREEN
-// =====================================================
-
-const CheckInResultScreen = ({ result, direction, units, onRestart, onBack }) => {
-  const isNoChange = result.verdict === 'no_change';
-  const isCut = direction === 'cut';
-
-  return (
-    <Card className="max-w-2xl">
-      <BackButton onClick={onBack} />
-      <div>
-        <span className="text-xs font-semibold text-orange-600 tracking-widest uppercase">Check-in result</span>
-
-        {isNoChange ? (
-          <>
-            <h2 className="mt-2 text-3xl font-bold text-stone-900">
-              {result.reason === 'on_track' && "You're on track."}
-              {result.reason === 'recomp' && "You're recomping."}
-              {result.reason === 'accuracy' && "Track better, come back."}
-              {!['on_track', 'recomp', 'accuracy'].includes(result.reason) && "No change needed."}
-            </h2>
-            <p className="text-stone-700 mt-3 leading-relaxed">{result.message}</p>
-            {result.detail && (
-              <p className="text-stone-600 mt-3 text-sm leading-relaxed">{result.detail}</p>
-            )}
-
-            <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-5">
-              <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Keep eating</div>
-              <div className="text-4xl font-bold text-stone-900 mt-1">{result.newTarget}</div>
-              <div className="text-sm text-stone-600">kcal per day · same as before</div>
-            </div>
-          </>
-        ) : (
-          <>
-            <h2 className="mt-2 text-3xl font-bold text-stone-900">
-              {result.reason === 'down' ? 'Reducing your target.' : 'Bumping your target up.'}
-            </h2>
-            <p className="text-stone-700 mt-3 leading-relaxed">{result.message}</p>
-            {result.detail && (
-              <p className="text-stone-600 mt-3 text-sm leading-relaxed">{result.detail}</p>
-            )}
-
-            <div className="mt-6 bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-200 rounded-xl p-6">
-              <div className="text-xs font-semibold text-orange-700 uppercase tracking-wider">Your new daily target</div>
-              <div className="text-5xl font-bold text-stone-900 mt-1">{result.newTarget}</div>
-              <div className="text-sm text-stone-600 mt-1">kcal per day</div>
-            </div>
-
-            {result.newFat !== undefined && (
-              <div className="mt-4">
-                <h3 className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-3">Updated macros</h3>
-                <div className="space-y-2">
-                  <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
-                    <div className="font-medium text-stone-900">Protein</div>
-                    <div className="text-xl font-bold text-stone-900">{result.newProtein}g</div>
-                  </div>
-                  <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
-                    <div className="font-medium text-stone-900">Fat</div>
-                    <div className="text-xl font-bold text-stone-900">{result.newFat}g</div>
-                  </div>
-                  <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
-                    <div className="font-medium text-stone-900">Carbs</div>
-                    <div className="text-xl font-bold text-stone-900">{result.newCarbs}g</div>
-                  </div>
-                  <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
-                    <div className="font-medium text-stone-900">Fiber <span className="text-xs font-normal text-stone-500">(min)</span></div>
-                    <div className="text-xl font-bold text-stone-900">{calculateFiber(result.newTarget)}g</div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-5 text-sm text-stone-600">
-          {isCut
-            ? "Come back next week with another two weeks of data. Most weeks should produce 'no change' — that's the system working."
-            : "Come back in a month. Patience is the dominant virtue of a clean lean bulk."
-          }
-        </div>
-
-        <div className="text-center mt-6">
-          <button onClick={onRestart} className="text-xs text-stone-500 hover:text-stone-700 underline underline-offset-2">
-            Run another check-in or set up a new plan
-          </button>
-        </div>
-      </div>
-    </Card>
-  );
-};
-
-// =====================================================
 // BULKING CHECK-IN  (logic untouched — never read archetype)
+// `prefill` (optional) seeds current target, protein, and target monthly gain
+// (recomputed from tier/subBracket/weight). All editable.
 // =====================================================
 
-const BulkingCheckInScreen = ({ onSubmit, units, onBack }) => {
-  const [currentTarget, setCurrentTarget] = useState('');
-  const [proteinTarget, setProteinTarget] = useState('');
+const BulkingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
+  const [currentTarget, setCurrentTarget] = useState(prefill.currentTarget || '');
+  const [proteinTarget, setProteinTarget] = useState(prefill.proteinTarget || '');
   const [bwLastMonth, setBwLastMonth] = useState('');
   const [bwThisMonth, setBwThisMonth] = useState('');
-  const [targetMonthlyGain, setTargetMonthlyGain] = useState('');
+  const [targetMonthlyGain, setTargetMonthlyGain] = useState(prefill.targetMonthlyGain || '');
   const [strengthUp, setStrengthUp] = useState(null);
+
+  const isPrefilled = !!prefill.currentTarget;
 
   const unitW = units === 'metric' ? 'kg' : 'lb';
 
@@ -1743,6 +1873,12 @@ const BulkingCheckInScreen = ({ onSubmit, units, onBack }) => {
         <p className="text-stone-600 mt-2 text-sm">
           Bulking moves slowly. We check monthly because weekly bulking signals are too noisy to act on. We don't need precise calorie tracking — your weight and strength tell us what we need to know.
         </p>
+
+        {isPrefilled && (
+          <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 mt-3">
+            Pre-filled from your MacroMetric™ code — just add this month's numbers below (edit anything that's changed).
+          </p>
+        )}
 
         <div className="space-y-4 mt-5">
           <div>
@@ -1831,6 +1967,10 @@ const BulkingCheckInScreen = ({ onSubmit, units, onBack }) => {
   );
 };
 
+// =====================================================
+// BULKING CHECK-IN LOGIC  (unchanged)
+// =====================================================
+
 function processBulkingCheckIn(input, units = 'metric') {
   const wUnit = units === 'imperial' ? 'lb' : 'kg';
   const fmt = (kg) => units === 'imperial' ? kgToLb(kg).toFixed(1) : kg.toFixed(1);
@@ -1901,6 +2041,172 @@ function processBulkingCheckIn(input, units = 'metric') {
 }
 
 // =====================================================
+// CHECK-IN RESULT SCREEN
+// Emits an updated MM1 code when (a) the check-in was started from a code
+// (ingestedPlan present) AND (b) the targets actually changed. On a no-change
+// verdict, calories didn't move — so the existing MealFrame plan is still
+// current and no new code is pushed.
+// =====================================================
+
+const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart, onBack }) => {
+  const isNoChange = result.verdict === 'no_change';
+  const isCut = direction === 'cut';
+  const [copied, setCopied] = useState(false);
+
+  // Complete only when the check-in was started from a code. null for manual.
+  const updatedCode = buildCheckInCode(result, direction, ingestedPlan, units);
+  // Only worth refreshing MealFrame when the numbers actually changed.
+  const showCode = updatedCode && !isNoChange;
+
+  const goToMealFrame = () => {
+    if (!updatedCode) return;
+    window.open(`${MEALFRAME_URL}?code=${encodeURIComponent(updatedCode)}`, '_blank');
+  };
+  const copyCode = async () => {
+    if (!updatedCode) return;
+    try {
+      await navigator.clipboard.writeText(updatedCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard may be unavailable; code is still visible to copy manually
+    }
+  };
+
+  const footerNote = isCut
+    ? "Come back next week with another two weeks of data. Most weeks should produce 'no change' — that's the system working."
+    : "Come back in a month. Patience is the dominant virtue of a clean lean bulk.";
+
+  return (
+    <Card className="max-w-2xl">
+      <BackButton onClick={onBack} />
+      <div>
+        <span className="text-xs font-semibold text-orange-600 tracking-widest uppercase">Check-in result</span>
+
+        {isNoChange ? (
+          <>
+            <h2 className="mt-2 text-3xl font-bold text-stone-900">
+              {result.reason === 'on_track' && "You're on track."}
+              {result.reason === 'recomp' && "You're recomping."}
+              {result.reason === 'accuracy' && "Track better, come back."}
+              {result.reason === 'strength_lag' && "Hold the line."}
+              {result.reason === 'weight_lag' && "Hold the line."}
+              {!['on_track', 'recomp', 'accuracy', 'strength_lag', 'weight_lag'].includes(result.reason) && "No change needed."}
+            </h2>
+            <p className="text-stone-700 mt-3 leading-relaxed">{result.message}</p>
+            {result.detail && (
+              <p className="text-stone-600 mt-3 text-sm leading-relaxed">{result.detail}</p>
+            )}
+
+            <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-5">
+              <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Keep eating</div>
+              <div className="text-4xl font-bold text-stone-900 mt-1">{result.newTarget}</div>
+              <div className="text-sm text-stone-600">kcal per day · same as before</div>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="mt-2 text-3xl font-bold text-stone-900">
+              {result.reason === 'down' ? 'Reducing your target.' : 'Bumping your target up.'}
+            </h2>
+            <p className="text-stone-700 mt-3 leading-relaxed">{result.message}</p>
+            {result.detail && (
+              <p className="text-stone-600 mt-3 text-sm leading-relaxed">{result.detail}</p>
+            )}
+
+            <div className="mt-6 bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-200 rounded-xl p-6">
+              <div className="text-xs font-semibold text-orange-700 uppercase tracking-wider">Your new daily target</div>
+              <div className="text-5xl font-bold text-stone-900 mt-1">{result.newTarget}</div>
+              <div className="text-sm text-stone-600 mt-1">kcal per day</div>
+            </div>
+
+            {result.newFat !== undefined && (
+              <div className="mt-4">
+                <h3 className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-3">Updated macros</h3>
+                <div className="space-y-2">
+                  <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
+                    <div className="font-medium text-stone-900">Protein</div>
+                    <div className="text-xl font-bold text-stone-900">{result.newProtein}g</div>
+                  </div>
+                  <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
+                    <div className="font-medium text-stone-900">Fat</div>
+                    <div className="text-xl font-bold text-stone-900">{result.newFat}g</div>
+                  </div>
+                  <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
+                    <div className="font-medium text-stone-900">Carbs</div>
+                    <div className="text-xl font-bold text-stone-900">{result.newCarbs}g</div>
+                  </div>
+                  <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
+                    <div className="font-medium text-stone-900">Fiber <span className="text-xs font-normal text-stone-500">(min)</span></div>
+                    <div className="text-xl font-bold text-stone-900">{calculateFiber(result.newTarget)}g</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* MealFrame handoff — only when targets changed AND we have a full code */}
+        {showCode && (
+          <>
+            <div className="border-t border-stone-200 my-6"></div>
+            <div className="bg-stone-900 rounded-xl p-5 text-center">
+              <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your Updated MacroMetric™ Code</h4>
+              <p className="text-stone-400 text-xs mt-1">Your numbers changed — paste this into MealFrame™ to refresh your meal structure and examples. Keep it for your next check-in, too.</p>
+              <div className="mt-3 bg-stone-800 border border-stone-700 rounded-lg px-3 py-3">
+                <code className="text-orange-300 text-xs break-all leading-relaxed">{updatedCode}</code>
+              </div>
+              <button
+                onClick={copyCode}
+                className="mt-3 inline-flex items-center gap-2 bg-white text-stone-900 text-sm font-medium py-2 px-4 rounded-full hover:bg-stone-100 transition-colors"
+              >
+                <Copy className="w-4 h-4" /> {copied ? 'Copied!' : 'Copy code'}
+              </button>
+            </div>
+
+            <div className="text-center mt-6">
+              <h3 className="text-xl font-bold text-stone-900">Refresh your meals</h3>
+              <p className="text-stone-600 mt-2 text-sm leading-relaxed">
+                Your targets moved, so your meal structure should too. Continue to <strong>MealFrame™</strong> with your updated code.
+              </p>
+              <div className="space-y-2 mt-5">
+                <PrimaryButton onClick={goToMealFrame}>
+                  Continue to MealFrame™ <ArrowRight className="w-4 h-4" />
+                </PrimaryButton>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Targets changed but the check-in was started manually — can't build a complete code */}
+        {result.verdict === 'change' && !updatedCode && (
+          <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-4 text-xs text-stone-500 text-center leading-relaxed">
+            Your targets changed. To get a MealFrame™ code automatically next time, start your check-in from your MacroMetric™ code instead of entering numbers by hand.
+          </div>
+        )}
+
+        {/* No change → existing MealFrame plan is still current */}
+        {isNoChange && ingestedPlan && (
+          <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-4 text-xs text-stone-500 text-center leading-relaxed">
+            Your numbers didn't change, so your current MealFrame™ structure is still on point — no refresh needed.
+          </div>
+        )}
+
+        <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-5 text-sm text-stone-600">
+          {footerNote}
+        </div>
+
+        <div className="text-center mt-6">
+          <button onClick={onRestart} className="text-xs text-stone-500 hover:text-stone-700 underline underline-offset-2">
+            Run another check-in or set up a new plan
+          </button>
+        </div>
+      </div>
+    </Card>
+  );
+};
+
+// =====================================================
 // MAIN APP
 // =====================================================
 
@@ -1915,6 +2221,8 @@ export default function App() {
 
   const [checkInResult, setCheckInResult] = useState(null);
   const [checkInDirection, setCheckInDirection] = useState(null);
+  const [ingestedPlan, setIngestedPlan] = useState(null); // decoded MM1 for check-in (null = manual)
+  const [checkInPrefill, setCheckInPrefill] = useState({}); // display-unit prefill for the form
 
   // Click-through from PhysiquePlan: ?code=… → auto-load, zero typing.
   useEffect(() => {
@@ -1973,16 +2281,57 @@ export default function App() {
     setResult(null);
     setCheckInResult(null);
     setCheckInDirection(null);
+    setIngestedPlan(null);
+    setCheckInPrefill({});
   };
 
   const goRerun = () => window.open(PLAN_URL, '_blank');
+
+  // An MM1 code was pasted into the check-in flow: recover everything, pre-fill
+  // the form (in display units), and route straight to the right check-in.
+  const onCheckInCodeDecoded = (mm1) => {
+    setIngestedPlan(mm1);
+    setUnits(mm1.units);
+    setCheckInDirection(mm1.direction);
+
+    const toDispW = (kg) => mm1.units === 'imperial'
+      ? String(Math.round(kgToLb(kg) * 10) / 10)
+      : String(Math.round(kg * 10) / 10);
+
+    if (mm1.direction === 'cut') {
+      const { rate } = getCuttingRate(mm1.tier, mm1.subBracket, mm1.height - mm1.weight);
+      const weeklyLossKg = mm1.weight * rate;
+      setCheckInPrefill({
+        currentTarget: String(mm1.target),
+        proteinTarget: String(mm1.protein),
+        height: mm1.units === 'imperial' ? String(Math.round(mm1.height / 2.54)) : String(mm1.height),
+        targetRate: toDispW(weeklyLossKg),
+      });
+      setScreen('checkin_cut');
+    } else {
+      const monthlyGainKg = mm1.weight * (getBulkGainRatePct(mm1.tier, mm1.subBracket) / 100);
+      setCheckInPrefill({
+        currentTarget: String(mm1.target),
+        proteinTarget: String(mm1.protein),
+        targetMonthlyGain: toDispW(monthlyGainKg),
+      });
+      setScreen('checkin_bulk');
+    }
+  };
+
+  // Manual fallback: no code, clear any ingested plan/prefill.
+  const onCheckInManual = () => {
+    setIngestedPlan(null);
+    setCheckInPrefill({});
+    setScreen('checkin_router');
+  };
 
   return (
     <Container>
       {screen === 'landing' && (
         <LandingScreen
           onStart={() => setScreen('code')}
-          onCheckIn={() => setScreen('checkin_router')}
+          onCheckIn={() => setScreen('checkin_code')}
         />
       )}
 
@@ -2035,13 +2384,20 @@ export default function App() {
       )}
 
       {/* CHECK-IN FLOW */}
+      {screen === 'checkin_code' && (
+        <CheckInCodeScreen
+          onDecoded={onCheckInCodeDecoded}
+          onManual={onCheckInManual}
+          onBack={() => setScreen('landing')}
+        />
+      )}
       {screen === 'checkin_router' && (
         <CheckInRouterScreen
           onSelect={(d) => {
             setCheckInDirection(d);
             setScreen(d === 'cut' ? 'checkin_cut_units' : 'checkin_bulk_units');
           }}
-          onBack={() => setScreen('landing')}
+          onBack={() => setScreen('checkin_code')}
         />
       )}
       {screen === 'checkin_cut_units' && (
@@ -2053,12 +2409,13 @@ export default function App() {
       {screen === 'checkin_cut' && (
         <CuttingCheckInScreen
           units={units}
+          prefill={checkInPrefill}
           onSubmit={(data) => {
             const res = processCuttingCheckIn(data, units);
-            setCheckInResult(res);
+            setCheckInResult({ ...res, currentWeight: data.bwThisWeek });
             setScreen('checkin_result');
           }}
-          onBack={() => setScreen('checkin_cut_units')}
+          onBack={() => setScreen(ingestedPlan ? 'checkin_code' : 'checkin_cut_units')}
         />
       )}
       {screen === 'checkin_bulk_units' && (
@@ -2070,12 +2427,13 @@ export default function App() {
       {screen === 'checkin_bulk' && (
         <BulkingCheckInScreen
           units={units}
+          prefill={checkInPrefill}
           onSubmit={(data) => {
             const res = processBulkingCheckIn(data, units);
-            setCheckInResult(res);
+            setCheckInResult({ ...res, currentWeight: data.bwThisMonth });
             setScreen('checkin_result');
           }}
-          onBack={() => setScreen('checkin_bulk_units')}
+          onBack={() => setScreen(ingestedPlan ? 'checkin_code' : 'checkin_bulk_units')}
         />
       )}
       {screen === 'checkin_result' && checkInResult && (
@@ -2083,6 +2441,7 @@ export default function App() {
           result={checkInResult}
           direction={checkInDirection}
           units={units}
+          ingestedPlan={ingestedPlan}
           onRestart={restart}
           onBack={() => setScreen(checkInDirection === 'cut' ? 'checkin_cut' : 'checkin_bulk')}
         />
