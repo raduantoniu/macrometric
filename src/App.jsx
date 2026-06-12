@@ -915,9 +915,9 @@ const PrincipleScreen = ({ onContinue, onBack }) => (
 
       <div className="bg-stone-50 border border-stone-200 rounded-xl p-5">
         <span className="text-xs font-semibold text-stone-500 uppercase tracking-wider">What's a floor, not a target</span>
-        <p className="text-stone-900 font-medium mt-1">Fat and carbs are minimums.</p>
+        <p className="text-stone-900 font-medium mt-1">Fat and carbs are guidelines.</p>
         <p className="text-stone-600 text-sm mt-2">
-          You'll get prescribed numbers, but think of them as floors. Some days fat will be 40% of calories, some days 25%. Fine. Just don't consistently drop below <strong>~60g of fat</strong> (for hormones and satiety) or below <strong>~100g of carbs cutting / 200g bulking</strong> (for sleep and training).
+          You'll get prescribed numbers, but think of them as guidelines. Some days fat will be 40% of calories, some days 25%. Fine. Just don't consistently drop below <strong>~60g of fat</strong> (for hormones and satiety) or below <strong>~100g of carbs cutting / 200g bulking</strong> (for sleep and training).
         </p>
       </div>
     </div>
@@ -1297,7 +1297,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
         {/* MealFrame code — paste fallback, mirrors PhysiquePlan's handoff */}
         <div className="bg-stone-900 rounded-xl p-5 text-center">
           <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your MacroMetric™ Code - Save this!</h4>
-          <p className="text-stone-400 text-xs mt-1">This code represents all your current data and we use it to build your meal plan in MealFrame™. You also use it to adjut your numbers during your check-ins here in MacroMetric™. Save it in your notes!</p>
+          <p className="text-stone-400 text-xs mt-1">This code represents all your current data and we use it to build your meal plan in MealFrame™. You also use it to adjust your numbers during your check-ins here in MacroMetric™. Save it in your notes!</p>
           <div className="mt-3 bg-stone-800 border border-stone-700 rounded-lg px-3 py-3">
             <code className="text-orange-300 text-xs break-all leading-relaxed">{mealFrameCode}</code>
           </div>
