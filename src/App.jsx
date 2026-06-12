@@ -1230,6 +1230,9 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
           <p className="text-sm text-stone-700 mt-2 leading-relaxed">
             Hit your calories and protein every day. Fat and carbs can fluctuate — just keep them above the floors. That's it.
           </p>
+          <p className="text-sm text-stone-700 mt-2 leading-relaxed">
+            As your body weight changes, return to MacroMetric™ to adjust your targets (weekly check-in when cutting / monthly check-in when bulking).
+          </p>
         </div>
 
         {/* Q&A */}
