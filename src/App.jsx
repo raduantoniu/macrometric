@@ -1210,7 +1210,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
           <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your plan target weight</div>
           <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeight(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
           <p className="text-sm text-stone-600 mt-2">
-            This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your goal physique weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan™), but for now, aim here.
+            This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your next physique milestone which is to be lean at a body weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan™), but for now, aim here.
           </p>
         </div>
 
@@ -1286,8 +1286,8 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
 
         {/* MealFrame code — paste fallback, mirrors PhysiquePlan's handoff */}
         <div className="bg-stone-900 rounded-xl p-5 text-center">
-          <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your MacroMetric™ Code</h4>
-          <p className="text-stone-400 text-xs mt-1">MealFrame™ uses this to pick up your targets — no re-entering numbers. Keep it for your check-ins, too.</p>
+          <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your MacroMetric™ Code - Save this!</h4>
+          <p className="text-stone-400 text-xs mt-1">This code represents all your current data and we use it to build your meal plan in MealFrame™. You also use it to adjut your numbers during your check-ins here in MacroMetric™. Save it in your notes!</p>
           <div className="mt-3 bg-stone-800 border border-stone-700 rounded-lg px-3 py-3">
             <code className="text-orange-300 text-xs break-all leading-relaxed">{mealFrameCode}</code>
           </div>
