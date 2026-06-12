@@ -580,6 +580,16 @@ const formatWeight = (kg, units) => {
   return `${kg.toFixed(1)} kg`;
 };
 
+// Whole-unit bodyweight display (no decimals), mirroring PhysiquePlan's
+// formatWeight. Used for actual bodyweights (current weight, plan target) so a
+// shipped 69.9 reads "70 kg" — the same number PhysiquePlan shows. The decimal
+// formatWeight above stays for sub-kg RATE lines (e.g. "0.4 kg per week"), which
+// must NOT round to whole units. Duration math still uses the precise destWeight.
+const formatWeightWhole = (kg, units) => {
+  if (units === 'imperial') return `${Math.round(kgToLb(kg))} lb`;
+  return `${Math.round(kg)} kg`;
+};
+
 const formatWeightRange = (kgLow, kgHigh, units) => {
   if (units === 'imperial') return `${Math.round(kgToLb(kgLow))}-${Math.round(kgToLb(kgHigh))} lb`;
   return `${Math.round(kgLow)}-${Math.round(kgHigh)} kg`;
@@ -870,11 +880,11 @@ const IntroScreen = ({ decoded, units, onContinue, onBack, onRerun }) => {
           </div>
           <div>
             <div className="text-xs text-stone-500 uppercase tracking-wider">Current weight</div>
-            <div className="font-semibold text-stone-900 mt-0.5">{formatWeight(decoded.weight, units)}</div>
+            <div className="font-semibold text-stone-900 mt-0.5">{formatWeightWhole(decoded.weight, units)}</div>
           </div>
           <div>
             <div className="text-xs text-stone-500 uppercase tracking-wider">Plan target</div>
-            <div className="font-semibold text-stone-900 mt-0.5">{formatWeight(decoded.destWeight, units)} <span className="font-normal text-stone-500">in ~{planWeeks} wks</span></div>
+            <div className="font-semibold text-stone-900 mt-0.5">{formatWeightWhole(decoded.destWeight, units)} <span className="font-normal text-stone-500">in ~{planWeeks} wks</span></div>
           </div>
         </div>
       </div>
@@ -1208,7 +1218,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
         {/* Plan target leads; ultimate goal stays as the north star */}
         <div className="mt-4 bg-stone-50 border border-stone-200 rounded-xl p-5">
           <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your plan target weight</div>
-          <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeight(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
+          <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeightWhole(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
           <p className="text-sm text-stone-600 mt-2">
             This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your next physique milestone which is to be lean at a body weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan™), but for now, aim here.
           </p>
