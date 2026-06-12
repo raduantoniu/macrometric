@@ -32,70 +32,79 @@ const roundUpTo50 = (x) => Math.ceil(x / 50) * 50;
 const roundToNearest5 = (x) => Math.round(x / 5) * 5;
 
 // =====================================================
+// PLAN DURATION
+// The block destination AND the recommended rate of change are SHIPPED in the
+// SS1 code (fields 13 & 14). MacroMetric no longer owns a rate model — it reads
+// the rate off the code and derives the same duration PhysiquePlan displays:
+//   cut  → rate is fractional bodyweight / WEEK
+//   bulk → rate is fractional bodyweight / MONTH
+// Mirror of PhysiquePlan's formatDuration / duration math so the two agree.
+// =====================================================
+
+function planDurationWeeks({ direction, weight, destWeight, rate }) {
+  if (!rate || rate <= 0) return 0;
+  if (direction === 'cut') {
+    const weeklyLoss = weight * rate;
+    return Math.max(0, (weight - destWeight) / weeklyLoss);
+  }
+  const monthlyGain = weight * rate;
+  const months = Math.max(0, (destWeight - weight) / monthlyGain);
+  return months * (52 / 12);
+}
+
+function formatDuration(weeks) {
+  const w = Math.max(1, Math.round(weeks));
+  if (w < 14) return { weeks: w, label: `${w} weeks` };
+  const months = Math.round(w / 4.345);
+  return { weeks: w, label: `${w} weeks (~${months} months)` };
+}
+
+// =====================================================
 // ░░░ TUNING SURFACE ░░░
-// Everything a coach would want to retune lives here. The logic below reads
-// these tables and never hardcodes a rate. Edit numbers here, not in functions.
-//
-// All targets are now keyed off STRENGTH DEVELOPMENT (tier + sub-bracket),
-// which PhysiquePlan ships in the SS1 code. The 10-archetype label is purely
-// narrative now — it no longer drives a single number.
+// Calorie knobs a coach would retune live here. NOTE: the RATE of bodyweight
+// change is no longer here — PhysiquePlan owns it and ships it in the SS1 code
+// (field 14). What remains below are MacroMetric-side calorie decisions only.
 // =====================================================
 
 // --- MAINTENANCE: muscle-mass adjustment -------------------------------------
-// Two lifters at the same bodyweight/height/age/activity burn slightly different
-// amounts: the more developed one carries more lean tissue (higher resting burn).
-// Mifflin-St Jeor only sees total bodyweight, so we add this back by tier.
-// Added into the component subtotal, so it flows through the ×1.10 TEF like NEAT.
 const TIER_MAINTENANCE_ADJ = { novice: 0, intermediate: 40, proficient: 80, advanced: 120 }; // kcal/day
 
-// Per-step NET cost above resting. NOT the gross "10k steps ≈ 500 kcal" figure —
-// BMR already pays for resting metabolism during walking time, so we count only
-// the increment over rest (~2.5 METs, not 3.5), shaved slightly for the fact that
-// the flat 20% NEAT below already includes baseline daily walking.
+// Per-step NET cost above resting.
 const STEPS_KCAL_PER_STEP = 0.03;
 
 const WORKOUT_KCAL = 200; // per resistance-training session
 
 // Per minute of NON-STEP cardio only (cycling, swimming, rowing, elliptical, yoga).
-// Foot-based cardio (running, jogging, treadmill, walking) is intentionally EXCLUDED
-// from this field — it's already captured in the step count, and counting it here too
-// would double-count. 7/min reflects the cycling/swimming/rowing this field now means.
 const CARDIO_KCAL_PER_MIN = 7;
 
-// --- CUTTING: loss rate ------------------------------------------------------
-// PRIMARY driver is heightDiff (= height_cm − weight_kg), our fat proxy:
-//   lower heightDiff = heavier-for-height = more fat to lose = faster safe cut.
-const CUT_RATE_BY_HEIGHTDIFF = [
-  { maxDiff: 70,       rate: 0.010, cap: 800 }, // very high body fat for height
-  { maxDiff: 80,       rate: 0.009, cap: 700 },
-  { maxDiff: 90,       rate: 0.007, cap: 600 },
-  { maxDiff: 100,      rate: 0.006, cap: 600 },
-  { maxDiff: Infinity, rate: 0.005, cap: 500 }, // already fairly lean
+// --- CUTTING: deficit ceiling ------------------------------------------------
+// The cut RATE comes from the code. This is the kcal/day deficit CAP — a pure
+// calorie-side safety bound (keeps the cut sane/hormonal for heavier clients).
+// It rarely binds for the intermediate clientele; when it does, the calories
+// trail the shipped rate slightly while the DISPLAYED duration still uses the
+// shipped rate (so PhysiquePlan and MacroMetric print the same number).
+const CUT_DEFICIT_CAP_BY_HEIGHTDIFF = [
+  { maxDiff: 70,       cap: 800 },
+  { maxDiff: 80,       cap: 700 },
+  { maxDiff: 90,       cap: 600 },
+  { maxDiff: 100,      cap: 600 },
+  { maxDiff: Infinity, cap: 500 },
 ];
-// SECONDARY driver: muscle-preservation multiplier on that rate. At equal
-// heightDiff a more developed lifter is actually leaner and has more hard-won
-// muscle to protect -> cut a touch slower. index = subBracket (0 low,1 mid,2 high).
-// Set every cell to 1.00 to make cutting purely heightDiff-driven.
-const CUT_PRESERVATION = {
-  novice:       [1.00, 1.00, 0.98],
-  intermediate: [0.98, 0.96, 0.94],
-  proficient:   [0.94, 0.92, 0.90],
-  advanced:     [0.90, 0.88, 0.86],
-};
 
-// --- BULKING: gain rate + surplus -------------------------------------------
-// Clean tier base × sub-bracket modifier. Monotonic by construction: a low-in-tier
-// lifter has more growth headroom, so he bulks faster than a high-in-tier lifter.
-const BULK_GAIN_RATE = { novice: 2.0, intermediate: 1.3, proficient: 0.8, advanced: 0.5 }; // %bw/month
-const BULK_SUBBRACKET_MULT = [1.15, 1.00, 0.85]; // [low, mid, high]
-// Surplus % of maintenance uses the same shape (gentler modifier), then capped.
+function getCutDeficitCap(heightDiff) {
+  const band = CUT_DEFICIT_CAP_BY_HEIGHTDIFF.find((b) => heightDiff <= b.maxDiff)
+    || CUT_DEFICIT_CAP_BY_HEIGHTDIFF[CUT_DEFICIT_CAP_BY_HEIGHTDIFF.length - 1];
+  return band.cap;
+}
+
+// --- BULKING: surplus (calorie knob — NOT the gain rate) ---------------------
+// The gain RATE comes from the code. The surplus % below is a separate calorie
+// decision (how big a surplus to run), so it stays here.
 const BULK_SURPLUS_PCT = { novice: 0.15, intermediate: 0.11, proficient: 0.08, advanced: 0.06 };
 const BULK_SURPLUS_SUBBRACKET_MULT = [1.10, 1.00, 0.90]; // [low, mid, high]
 const BULK_SURPLUS_CAP = 500; // kcal/day
 
 // --- PROTEIN ----------------------------------------------------------------
-// Prescribed by HEIGHT × coefficient (not bodyweight), keyed by tier + direction,
-// with a small within-tier nudge. More developed = more lean mass = higher coeff.
 const PROTEIN_COEFF = {
   cut:  { novice: 0.85, intermediate: 0.88, proficient: 0.92, advanced: 1.00 },
   bulk: { novice: 0.75, intermediate: 0.80, proficient: 0.85, advanced: 0.90 },
@@ -106,23 +115,20 @@ const PROTEIN_SUBBRACKET_NUDGE = [-0.02, 0.00, 0.02]; // [low, mid, high]
 const FAT_PCT = { cut: 0.35, bulk: 0.30 };
 
 // --- FIBER ------------------------------------------------------------------
-// A MINIMUM target, not a macro that's part of the calorie split (it lives
-// inside carbs). 14 g per 1,000 kcal is the standard recommendation; it earns
-// its place here because fiber drives satiety and prevents the constipation
-// common on a high-protein deficit.
 const FIBER_PER_1000KCAL = 14;
 
 // =====================================================
 // SHREDSMART CODE — decoder (schema v1)
 // Contract: SS1-<base64url(payload)>-<checksum>
-// payload = 12 fields joined by '|'. MUST mirror PhysiquePlan's encoder exactly.
+// payload = 14 fields joined by '|'. MUST mirror PhysiquePlan's encoder exactly.
+// Fields 13-14 are the destination + rate PhysiquePlan now ships:
+//   13 destWeight  block destination (kg) — the target weight for THIS plan
+//   14 rate        fractional bodyweight change (cut: /week, bulk: /month)
 // =====================================================
 
 const SCHEMA_PREFIX = 'SS1';
 const TIER_NAME = ['novice', 'intermediate', 'proficient', 'advanced'];
 
-// Same 2-char base36 hash PhysiquePlan uses. We recompute and compare so a
-// mistyped/corrupted code fails loudly instead of decoding into a wrong plan.
 function checksum2(str) {
   let h = 0;
   for (let i = 0; i < str.length; i++) {
@@ -160,7 +166,7 @@ function decodeShredSmartCode(raw) {
   if (checksum2(payload) !== checksum) return { ok: false, error: 'checksum' };
 
   const f = payload.split('|');
-  if (f.length < 12) return { ok: false, error: 'fields' };
+  if (f.length < 14) return { ok: false, error: 'fields' };
 
   const tierIdx = parseInt(f[4], 10);
   const data = {
@@ -174,12 +180,17 @@ function decodeShredSmartCode(raw) {
     subBracket: parseInt(f[6], 10),               // 7  0/1/2
     archetypeId: parseInt(f[7], 10),              // 8  narrative only
     direction: f[8] === 'c' ? 'cut' : 'bulk',     // 9  recommendation
-    goalLow: parseFloat(f[9]),                    // 10 kg
+    goalLow: parseFloat(f[9]),                    // 10 kg (ultimate goal, north star)
     goalHigh: parseFloat(f[10]),                  // 11 kg
     genDate: f[11],                               // 12 YYYYMMDD
+    destWeight: parseFloat(f[12]),                // 13 kg  block destination
+    rate: parseFloat(f[13]),                      // 14 fractional (cut /wk, bulk /mo)
   };
 
-  if (isNaN(data.height) || isNaN(data.weight) || isNaN(data.subBracket)) {
+  if (
+    isNaN(data.height) || isNaN(data.weight) || isNaN(data.subBracket) ||
+    isNaN(data.destWeight) || isNaN(data.rate)
+  ) {
     return { ok: false, error: 'fields' };
   }
   return { ok: true, data };
@@ -199,12 +210,12 @@ function genDateAgeWeeks(genDate) {
 // =====================================================
 // MACROMETRIC CODE — encoder (schema MM1)
 // The handoff to MealFrame™, mirroring the SS1 design. Carries MacroMetric's
-// COMPUTED outputs (target/macros/fiber/maintenance, which don't exist in SS1)
-// PLUS a pass-through of the body/strength fields SS1 already supplied
-// (tier/subBracket/weight/height) so MealFrame never has to re-decode SS1.
-// Same base64url + 2-char checksum so a corrupted code fails loudly.
+// COMPUTED outputs (target/macros/fiber/maintenance) PLUS pass-through fields
+// so downstream apps never re-decode SS1, INCLUDING the rate (field 14) so a
+// returning check-in pre-fills the target rate by reading it — MacroMetric no
+// longer owns a rate model to recompute it from.
 //
-// Contract (13 fields, '|'-joined — MealFrame's decoder MUST mirror EXACTLY):
+// Contract (14 fields, '|'-joined — MealFrame's decoder MUST mirror EXACTLY):
 //   1  units        'i' | 'm'              (display only)
 //   2  direction    'c' (cut) | 'b' (bulk)
 //   3  targetKcal   int
@@ -212,19 +223,17 @@ function genDateAgeWeeks(genDate) {
 //   5  fat          int  g
 //   6  carbs        int  g
 //   7  fiber        int  g    (minimum target)
-//   8  tier         int  0-3  (0 novice … 3 advanced — matches SS1 tierIdx)
+//   8  tier         int  0-3  (matches SS1 tierIdx)
 //   9  subBracket   int  0|1|2 (low/mid/high — matches SS1 subBracket)
-//   10 weight       kg, ≤1 decimal (pass-through from SS1 / latest check-in)
+//   10 weight       kg, ≤1 decimal (pass-through / latest check-in)
 //   11 height       int cm        (pass-through from SS1)
 //   12 maintenance  int kcal      (computed here from age/activity)
 //   13 genDate      YYYYMMDD      (staleness)
+//   14 rate         fractional bodyweight change (cut /wk, bulk /mo) — from SS1
 // Wrapped: MM1-<base64url(payload)>-<checksum>
 //
-// The SAME builder is used by both the setup-flow results screen AND the
-// check-in result screen. The check-in constructs an object with these exact
-// field names (updated target/macros + latest weight, pass-through strength
-// fields from the ingested MM1 code) and hands it here. One encoder, one
-// contract, no drift.
+// MealFrame ignores field 14 (its decoder gates on length, append-only), so this
+// addition is backward-compatible with the MealFrame MM1 decoder.
 // =====================================================
 
 const MM_SCHEMA_PREFIX = 'MM1';
@@ -256,6 +265,7 @@ function buildMacroMetricCode(result, units) {
     String(Math.round(result.height)),            // 11 height cm
     String(Math.round(result.maintenance)),       // 12 maintenance kcal
     genDateStr(),                                 // 13 genDate
+    (result.rate ?? 0).toFixed(5),                // 14 rate (cut /wk, bulk /mo)
   ];
   const payload = fields.join('|');
   return `${MM_SCHEMA_PREFIX}-${base64urlEncode(payload)}-${checksum2(payload)}`;
@@ -264,9 +274,8 @@ function buildMacroMetricCode(result, units) {
 // =====================================================
 // MACROMETRIC CODE — decoder (schema MM1)
 // Mirror of buildMacroMetricCode. Used by the CHECK-IN flow so a returning user
-// pastes the MM1 code from their plan (or their last check-in) and we recover
-// tier/subBracket/height/maintenance — the fields the check-in form never
-// collects but a complete output code needs. Symmetric with the SS1 decoder.
+// pastes the MM1 code and we recover tier/subBracket/height/maintenance/rate —
+// the fields the check-in form never collects but a complete output needs.
 //
 // Returns { ok:true, data } or { ok:false, error } where error is one of:
 // 'empty' | 'format' | 'version' | 'wrongcode' | 'corrupt' | 'checksum' | 'fields'
@@ -279,9 +288,7 @@ function decodeMacroMetricCode(raw) {
   const [prefix, body, checksum] = parts;
 
   if (prefix !== MM_SCHEMA_PREFIX) {
-    // Newer MacroMetric schema (MM2…) → ask for a re-run.
     if (/^MM\d+$/i.test(prefix)) return { ok: false, error: 'version' };
-    // They pasted a PhysiquePlan code by mistake.
     if (/^SS\d+$/i.test(prefix)) return { ok: false, error: 'wrongcode' };
     return { ok: false, error: 'format' };
   }
@@ -295,8 +302,8 @@ function decodeMacroMetricCode(raw) {
   if (checksum2(payload) !== checksum) return { ok: false, error: 'checksum' };
 
   const f = payload.split('|');
-  // <13 catches the legacy 7-field MM1 too → handled as 'fields' (re-run).
-  if (f.length < 13) return { ok: false, error: 'fields' };
+  // Current MM1 is 14 fields; anything shorter is an older/partial code → re-run.
+  if (f.length < 14) return { ok: false, error: 'fields' };
 
   const tierIdx = parseInt(f[7], 10);
   const data = {
@@ -314,11 +321,13 @@ function decodeMacroMetricCode(raw) {
     height: parseInt(f[10], 10),                  // 11 cm
     maintenance: parseInt(f[11], 10),             // 12 kcal
     genDate: f[12],                               // 13
+    rate: parseFloat(f[13]),                      // 14 fractional (cut /wk, bulk /mo)
   };
 
   if (
     isNaN(data.target) || isNaN(data.protein) ||
-    isNaN(data.weight) || isNaN(data.height) || isNaN(data.subBracket)
+    isNaN(data.weight) || isNaN(data.height) || isNaN(data.subBracket) ||
+    isNaN(data.rate)
   ) {
     return { ok: false, error: 'fields' };
   }
@@ -329,7 +338,6 @@ function decodeMacroMetricCode(raw) {
 // CLASSIFICATION LABELS (narrative only — no math reads these)
 // =====================================================
 
-// index = archetype id carried in field 8. Narrative label for display.
 const ARCHETYPE_NAMES = [
   'Skinny-Fat (Higher Body Fat)',   // 0
   'Skinny-Fat (Lower Body Fat)',    // 1
@@ -345,7 +353,6 @@ const ARCHETYPE_NAMES = [
 
 const SUBBRACKET_WORD = { 0: 'Low', 1: '', 2: 'High' };
 
-// "High-Intermediate", "Novice", etc. Mirrors PhysiquePlan's diagnosis label.
 function subBracketTierLabel(tier, subBracket) {
   const tierWord = {
     novice: 'Novice',
@@ -376,19 +383,14 @@ function calculateMaintenance({ weight, height, age, workouts, cardio, steps, jo
 }
 
 // =====================================================
-// DEFICIT CALCULATION (cutting) — heightDiff × muscle preservation
+// DEFICIT CALCULATION (cutting)
+// Rate comes from the SS1 code (fractional bw/week). The deficit ceiling is a
+// MacroMetric-side calorie safety bound keyed by heightDiff.
 // =====================================================
 
-function getCuttingRate(tier, subBracket, heightDiff) {
-  const band = CUT_RATE_BY_HEIGHTDIFF.find((b) => heightDiff <= b.maxDiff) || CUT_RATE_BY_HEIGHTDIFF[CUT_RATE_BY_HEIGHTDIFF.length - 1];
-  const presRow = CUT_PRESERVATION[tier] || [1, 1, 1];
-  const preservation = presRow[subBracket] ?? 1;
-  return { rate: band.rate * preservation, cap: band.cap, baseRate: band.rate, preservation };
-}
-
-function calculateCuttingTarget({ maintenance, weight, height, tier, subBracket }) {
+function calculateCuttingTarget({ maintenance, weight, height, rate }) {
   const heightDiff = height - weight;
-  const { rate, cap } = getCuttingRate(tier, subBracket, heightDiff);
+  const cap = getCutDeficitCap(heightDiff);
   const rateBasedDeficit = (weight * rate * 7700) / 7;
   const dailyDeficit = Math.min(rateBasedDeficit, cap);
   let target = roundUpTo50(maintenance - dailyDeficit);
@@ -416,60 +418,28 @@ function calculateCuttingTarget({ maintenance, weight, height, tier, subBracket 
 }
 
 // =====================================================
-// SURPLUS CALCULATION (bulking) — tier base × sub-bracket modifier
+// SURPLUS CALCULATION (bulking)
+// Surplus % is a MacroMetric calorie knob (tier × sub-bracket). The target gain
+// RATE comes from the SS1 code (fractional bw/month).
 // =====================================================
 
-// Standalone so the 12-week projection can use it without computing maintenance.
-function getBulkGainRatePct(tier, subBracket) {
-  return (BULK_GAIN_RATE[tier] ?? 0.8) * (BULK_SUBBRACKET_MULT[subBracket] ?? 1); // %bw/month
-}
-
-function calculateBulkingTarget({ maintenance, weight, tier, subBracket }) {
+function calculateBulkingTarget({ maintenance, weight, tier, subBracket, rate }) {
   const basePct = BULK_SURPLUS_PCT[tier] ?? 0.08;
   const pct = basePct * (BULK_SURPLUS_SUBBRACKET_MULT[subBracket] ?? 1);
   const rawSurplus = maintenance * pct;
   const surplus = Math.min(rawSurplus, BULK_SURPLUS_CAP);
   const target = roundUpTo50(maintenance + surplus);
 
-  // Realistic target gain rate (%bw/month) → absolute monthly gain.
-  const gainRatePct = getBulkGainRatePct(tier, subBracket);
-  const targetMonthlyGain = weight * (gainRatePct / 100);
+  // Target gain rate comes straight from the shipped rate (fractional bw/month).
+  const targetMonthlyGain = weight * rate;
 
   return {
     target,
     surplusPct: pct,
     appliedSurplus: surplus,
     targetMonthlyGain,
-    gainRatePct,
+    gainRatePct: rate * 100,
   };
-}
-
-// =====================================================
-// 12-WEEK LANDING ZONE
-// PhysiquePlan ships only the ULTIMATE goal range. The near-term (this-block)
-// target is MacroMetric's to set, projected from our own gain/loss rates.
-// Depends only on the code (tier/subBracket/weight/height) — no age/activity —
-// so the intro screen and the results screen produce the same number.
-// =====================================================
-
-function compute12WeekRange({ direction, weight, height, tier, subBracket, goalLow, goalHigh }) {
-  if (direction === 'cut') {
-    const { rate } = getCuttingRate(tier, subBracket, height - weight);
-    const weeklyLoss = weight * rate;
-    const optimistic = weight - 12 * weeklyLoss; // 12 clean weeks
-    const realistic = weight - 10 * weeklyLoss;  // with the inevitable stalls
-    let low = Math.max(Math.min(optimistic, realistic), goalLow); // never blow past the ultimate goal
-    let high = Math.max(optimistic, realistic);
-    if (low > high) high = low;
-    return { low, high };
-  }
-  const monthly = weight * (getBulkGainRatePct(tier, subBracket) / 100);
-  const slow = weight + 2.5 * monthly;
-  const fast = weight + 3 * monthly;
-  let low = Math.min(slow, fast);
-  let high = Math.min(Math.max(slow, fast), goalHigh); // don't overshoot the ultimate goal
-  if (high < low) low = high;
-  return { low, high };
 }
 
 // =====================================================
@@ -498,8 +468,6 @@ function calculateCarbs(calories, proteinG, fatG) {
   return carbs;
 }
 
-// Minimum daily fiber (g), scaled to calorie intake, rounded to the nearest 5
-// so it reads as a clean target.
 function calculateFiber(calories) {
   return roundToNearest5((calories / 1000) * FIBER_PER_1000KCAL);
 }
@@ -507,12 +475,13 @@ function calculateFiber(calories) {
 // =====================================================
 // FULL PRESCRIPTION
 // data = decoded code (tier, subBracket, direction, height, weight, archetypeId,
-//        goalLow, goalHigh) + collected (age, workouts, cardio, steps, job)
+//        goalLow, goalHigh, destWeight, rate) + collected (age, workouts, cardio,
+//        steps, job)
 // =====================================================
 
 function buildPrescription(data) {
   const maint = calculateMaintenance({ ...data });
-  const { direction, tier, subBracket } = data;
+  const { direction, tier, subBracket, rate, destWeight } = data;
 
   let calorieResult;
   if (direction === 'cut') {
@@ -520,8 +489,7 @@ function buildPrescription(data) {
       maintenance: maint.tdee,
       weight: data.weight,
       height: data.height,
-      tier,
-      subBracket,
+      rate,
     });
   } else {
     calorieResult = calculateBulkingTarget({
@@ -529,6 +497,7 @@ function buildPrescription(data) {
       weight: data.weight,
       tier,
       subBracket,
+      rate,
     });
   }
 
@@ -536,6 +505,13 @@ function buildPrescription(data) {
   const fat = calculateFat(calorieResult.target, direction);
   const carbs = calculateCarbs(calorieResult.target, protein, fat);
   const fiber = calculateFiber(calorieResult.target);
+
+  const durationWeeks = planDurationWeeks({
+    direction,
+    weight: data.weight,
+    destWeight,
+    rate,
+  });
 
   return {
     maintenance: Math.round(maint.tdee),
@@ -552,6 +528,9 @@ function buildPrescription(data) {
     height: data.height,
     goalLow: data.goalLow,
     goalHigh: data.goalHigh,
+    destWeight,
+    rate,
+    durationWeeks,
     weeklyRate: calorieResult.weeklyRate,
     targetWeeklyLoss: calorieResult.targetWeeklyLoss,
     targetMonthlyGain: calorieResult.targetMonthlyGain,
@@ -562,20 +541,10 @@ function buildPrescription(data) {
 
 // =====================================================
 // CHECK-IN → MM1 CODE
-// A check-in can produce a COMPLETE MM1 code only when it was started from an
-// MM1 code (so tier/subBracket/height/maintenance are known). This builds the
-// updated plan object and hands it to the one shared encoder.
-//   - target/protein come from the check-in result (newTarget/newProtein)
-//   - fat/carbs/fiber are recomputed deterministically from the new target,
-//     exactly the way MacroMetric built them originally (so a no-change result
-//     reproduces the original macros, and a change reflects the new target)
-//   - weight is the user's LATEST measured weight from this check-in
-//   - tier/subBracket/height/maintenance pass through from the ingested code
-//     (maintenance is carried forward unchanged — the check-in has no age/
-//     activity to recompute it, and the check-in math never uses it; the
-//     freshly-adjusted TARGET is what matters)
-// Returns null if there's no ingested plan (manual-entry check-in) — we can't
-// fabricate strength data.
+// A check-in produces a COMPLETE MM1 code only when started from an MM1 code (so
+// tier/subBracket/height/maintenance/rate are known). The rate passes through
+// unchanged (the check-in adjusts the TARGET, not the recommended pace).
+// Returns null for a manual-entry check-in — we can't fabricate the carried fields.
 // =====================================================
 
 function buildCheckInCode(result, direction, ingestedPlan, units) {
@@ -597,6 +566,7 @@ function buildCheckInCode(result, direction, ingestedPlan, units) {
     weight: result.currentWeight ?? ingestedPlan.weight, // latest measured weight
     height: ingestedPlan.height,
     maintenance: ingestedPlan.maintenance,
+    rate: ingestedPlan.rate, // carried forward unchanged
   };
   return buildMacroMetricCode(plan, units);
 }
@@ -731,7 +701,7 @@ const LandingScreen = ({ onStart, onCheckIn }) => (
           Get your <em className="italic font-semibold text-orange-600">nutrition targets</em>.
         </h1>
         <p className="mt-4 text-stone-600 leading-relaxed">
-          The exact calories and macros to eat each day over your 12-week PhysiquePlan. Built around your strength profile, scaled to your body, designed to actually work.
+          The exact calories and macros to eat each day across your ShredSmart plan. Built around your strength profile, scaled to your body, designed to actually work.
         </p>
       </div>
       <div className="bg-stone-50 border border-stone-200 rounded-xl p-6">
@@ -763,7 +733,7 @@ const LandingScreen = ({ onStart, onCheckIn }) => (
           onClick={onCheckIn}
           className="mt-2 w-full bg-stone-50 hover:bg-stone-100 text-stone-900 font-medium py-3.5 px-6 rounded-full transition-colors text-sm border border-stone-200"
         >
-          I'm in the middle of a 12-week plan
+          I'm in the middle of a plan
         </button>
         <p className="text-xs text-stone-500 text-center mt-3">Takes about 3 minutes.</p>
       </div>
@@ -778,7 +748,7 @@ const CODE_ERROR_COPY = {
   checksum: "That code doesn't look right — a character may be off. Copy it again from your PhysiquePlan™ blueprint, or use the “Continue to MacroMetric™” button there to skip typing.",
   corrupt: "That code couldn't be read. Copy it again from your PhysiquePlan™ blueprint, or use the “Continue to MacroMetric™” button there.",
   format: "That doesn't look like a ShredSmart code. It should start with “SS1-”. Copy it again from your PhysiquePlan™ blueprint.",
-  fields: "That code is incomplete. Re-copy the full code from your PhysiquePlan™ blueprint.",
+  fields: "That code is incomplete or from an older version of PhysiquePlan™. Re-run PhysiquePlan to get a current code.",
   empty: "Paste your code to continue.",
 };
 
@@ -870,7 +840,12 @@ const IntroScreen = ({ decoded, units, onContinue, onBack, onRerun }) => {
   const dirLabel = decoded.direction === 'cut' ? 'Cut (lose fat)' : 'Lean bulk (build muscle)';
   const weeks = genDateAgeWeeks(decoded.genDate);
   const stale = weeks !== null && weeks > 12;
-  const block = compute12WeekRange(decoded);
+  const planWeeks = Math.max(1, Math.round(planDurationWeeks({
+    direction: decoded.direction,
+    weight: decoded.weight,
+    destWeight: decoded.destWeight,
+    rate: decoded.rate,
+  })));
 
   return (
     <Card>
@@ -898,8 +873,8 @@ const IntroScreen = ({ decoded, units, onContinue, onBack, onRerun }) => {
             <div className="font-semibold text-stone-900 mt-0.5">{formatWeight(decoded.weight, units)}</div>
           </div>
           <div>
-            <div className="text-xs text-stone-500 uppercase tracking-wider">12-week target</div>
-            <div className="font-semibold text-stone-900 mt-0.5">{formatWeightRange(block.low, block.high, units)}</div>
+            <div className="text-xs text-stone-500 uppercase tracking-wider">Plan target</div>
+            <div className="font-semibold text-stone-900 mt-0.5">{formatWeight(decoded.destWeight, units)} <span className="font-normal text-stone-500">in ~{planWeeks} wks</span></div>
           </div>
         </div>
       </div>
@@ -1097,7 +1072,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
   const direction = result.direction;
   const isCut = direction === 'cut';
   const tierLabel = subBracketTierLabel(result.tier, result.subBracket);
-  const block = compute12WeekRange(result);
+  const { weeks: planWeeks, label: durationLabel } = formatDuration(result.durationWeeks);
   const mealFrameCode = buildMacroMetricCode(result, units);
   const [copied, setCopied] = useState(false);
 
@@ -1230,12 +1205,12 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
           )}
         </div>
 
-        {/* Near-term target leads; ultimate goal stays as the north star */}
+        {/* Plan target leads; ultimate goal stays as the north star */}
         <div className="mt-4 bg-stone-50 border border-stone-200 rounded-xl p-5">
-          <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your 12-week target weight</div>
-          <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeightRange(block.low, block.high, units)}</div>
+          <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your plan target weight</div>
+          <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeight(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
           <p className="text-sm text-stone-600 mt-2">
-            This is where this block takes you — your job for the next 12 weeks. You're ultimately heading for your goal physique weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan™), but for now, aim here.
+            This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your goal physique weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan™), but for now, aim here.
           </p>
         </div>
 
@@ -1346,9 +1321,6 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
 
 // =====================================================
 // CHECK-IN: paste your MM1 code (primary entry)
-// Ingesting the MM1 code is what lets the check-in emit a COMPLETE MM1 code at
-// the end (it recovers tier/subBracket/height/maintenance) and pre-fills the
-// form. Manual entry stays available as a fallback, but can't produce a code.
 // =====================================================
 
 const CheckInCodeScreen = ({ onDecoded, onManual, onBack }) => {
@@ -1471,8 +1443,8 @@ const UnitsScreen = ({ onSelect, onBack }) => (
 // =====================================================
 // CUTTING CHECK-IN  (logic untouched — never read archetype)
 // `prefill` (optional) seeds the fields we can recover from the ingested MM1
-// code: current target, protein, height, and the target rate (recomputed from
-// tier/subBracket/weight/height). All editable.
+// code: current target, protein, height, and the target rate (read from the
+// code's rate field). All editable.
 // =====================================================
 
 const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
@@ -1829,7 +1801,7 @@ function processCuttingCheckIn(input, units = 'metric') {
 // =====================================================
 // BULKING CHECK-IN  (logic untouched — never read archetype)
 // `prefill` (optional) seeds current target, protein, and target monthly gain
-// (recomputed from tier/subBracket/weight). All editable.
+// (read from the code's rate field). All editable.
 // =====================================================
 
 const BulkingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
@@ -2042,10 +2014,6 @@ function processBulkingCheckIn(input, units = 'metric') {
 
 // =====================================================
 // CHECK-IN RESULT SCREEN
-// Emits an updated MM1 code when (a) the check-in was started from a code
-// (ingestedPlan present) AND (b) the targets actually changed. On a no-change
-// verdict, calories didn't move — so the existing MealFrame plan is still
-// current and no new code is pushed.
 // =====================================================
 
 const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart, onBack }) => {
@@ -2262,6 +2230,8 @@ export default function App() {
           archetypeId: decoded.archetypeId,
           goalLow: decoded.goalLow,
           goalHigh: decoded.goalHigh,
+          destWeight: decoded.destWeight,
+          rate: decoded.rate,
           ...details,
         });
         setResult(prescription);
@@ -2288,7 +2258,8 @@ export default function App() {
   const goRerun = () => window.open(PLAN_URL, '_blank');
 
   // An MM1 code was pasted into the check-in flow: recover everything, pre-fill
-  // the form (in display units), and route straight to the right check-in.
+  // the form (in display units), and route straight to the right check-in. The
+  // target rate is READ from the code's rate field (no rate model here anymore).
   const onCheckInCodeDecoded = (mm1) => {
     setIngestedPlan(mm1);
     setUnits(mm1.units);
@@ -2299,8 +2270,7 @@ export default function App() {
       : String(Math.round(kg * 10) / 10);
 
     if (mm1.direction === 'cut') {
-      const { rate } = getCuttingRate(mm1.tier, mm1.subBracket, mm1.height - mm1.weight);
-      const weeklyLossKg = mm1.weight * rate;
+      const weeklyLossKg = mm1.weight * mm1.rate; // rate is fractional bw / week
       setCheckInPrefill({
         currentTarget: String(mm1.target),
         proteinTarget: String(mm1.protein),
@@ -2309,7 +2279,7 @@ export default function App() {
       });
       setScreen('checkin_cut');
     } else {
-      const monthlyGainKg = mm1.weight * (getBulkGainRatePct(mm1.tier, mm1.subBracket) / 100);
+      const monthlyGainKg = mm1.weight * mm1.rate; // rate is fractional bw / month
       setCheckInPrefill({
         currentTarget: String(mm1.target),
         proteinTarget: String(mm1.protein),
