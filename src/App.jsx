@@ -1262,7 +1262,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
             <QAItem question="Why isn't my protein higher?">
               <p>MacroMetric sets protein based on your actual muscle development and lean mass — your true needs. Most calculators set protein based on bodyweight, which severely overestimates the requirements of anyone carrying a moderate amount of body fat.</p>
               <p className="mt-2">ShredSmart sets protein squarely in the optimal range, but intentionally on the medium-to-lower end. Going higher would mean less fat and carbs, which hurts hormonal balance, sleep, training, and meal variety.</p>
-              <p className="mt-2">You can go a bit above your prescribed number if your diet preferences favor it — but don't go significantly higher when cutting. Trust the number — it's set this way deliberately, and it's good for you.</p>
+              <p className="mt-2">You can go a bit above your prescribed number if your diet preferences favor it, but don't go significantly higher when cutting. Trust the number! It is set this way deliberately, and it's good for you.</p>
             </QAItem>
             <QAItem question="Should I eat back the calories I burn through exercise?">
               <p>Only if the activity isn't already captured in your maintenance calculation.</p>
