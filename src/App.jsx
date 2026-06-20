@@ -106,8 +106,8 @@ const BULK_SURPLUS_CAP = 500; // kcal/day
 
 // --- PROTEIN ----------------------------------------------------------------
 const PROTEIN_COEFF = {
-  cut:  { novice: 0.85, intermediate: 0.88, proficient: 0.92, advanced: 1.00 },
-  bulk: { novice: 0.75, intermediate: 0.80, proficient: 0.85, advanced: 0.90 },
+  cut:  { novice: 0.82, intermediate: 0.82, proficient: 0.84, advanced: 0.90 },
+  bulk: { novice: 0.75, intermediate: 0.75, proficient: 0.80, advanced: 0.85 },
 };
 const PROTEIN_SUBBRACKET_NUDGE = [-0.02, 0.00, 0.02]; // [low, mid, high]
 
