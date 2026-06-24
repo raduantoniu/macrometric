@@ -336,19 +336,27 @@ function decodeMacroMetricCode(raw) {
 
 // =====================================================
 // CLASSIFICATION LABELS (narrative only — no math reads these)
+// Mirrors PhysiquePlan's 13-entry archetype registry. Positional: the index is
+// SS1 field 8 (archetypeId). Order MUST match PhysiquePlan exactly, since the
+// label is a pure positional lookup. (Registry grew 10 → 13: the novice
+// higher-BF band split into Out of Shape / Skinny-Fat, and the single Advanced
+// bucket split into three by body fat.)
 // =====================================================
 
 const ARCHETYPE_NAMES = [
-  'Skinny-Fat (Higher Body Fat)',   // 0
-  'Skinny-Fat (Lower Body Fat)',    // 1
-  'Hard Gainer / Skinny',           // 2
-  'Decent Muscle, Higher Body Fat', // 3
-  'Intermediate, Mid-Range',        // 4
-  'Lean Intermediate',              // 5
-  'Strong but Higher Body Fat',     // 6
-  'Almost There',                   // 7
-  'Lean & Muscular',                // 8
-  'Advanced Lifter',                // 9
+  'Out of Shape',                      // 0
+  'Skinny-Fat (Higher Body Fat)',      // 1
+  'Skinny-Fat (Lower Body Fat)',       // 2
+  'Hard Gainer / Skinny',              // 3
+  'Decent Muscle, Higher Body Fat',    // 4
+  'Intermediate, Mid-Range Body Fat',  // 5
+  'Lean Intermediate',                 // 6
+  'Strong but Higher Body Fat',        // 7
+  'Strong, Mid-Range Body Fat',        // 8
+  'Lean & Muscular',                   // 9
+  'Advanced, Higher Body Fat',         // 10
+  'Advanced, Medium Body Fat',         // 11
+  'Advanced & Lean',                   // 12
 ];
 
 const SUBBRACKET_WORD = { 0: 'Low', 1: '', 2: 'High' };
