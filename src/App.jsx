@@ -751,7 +751,7 @@ const LandingScreen = ({ onStart, onCheckIn }) => (
           onClick={onCheckIn}
           className="mt-2 w-full bg-stone-50 hover:bg-stone-100 text-stone-900 font-medium py-3.5 px-6 rounded-full transition-colors text-sm border border-stone-200"
         >
-          I'm in the middle of a plan
+          Check-in: Adjust my plan
         </button>
         <p className="text-xs text-stone-500 text-center mt-3">Takes about 3 minutes.</p>
       </div>
