@@ -118,6 +118,114 @@ const FAT_PCT = { cut: 0.35, bulk: 0.30 };
 const FIBER_PER_1000KCAL = 14;
 
 // =====================================================
+// ░░░ CUSTOM-PLAN RATE + DESTINATION DEFAULTS ░░░
+// PORTED FROM PHYSIQUEPLAN. The SS1 flow reads the recommended rate and block
+// destination off the code. The "Build a custom plan" flow has no code to read,
+// so it recomputes the SAME recommended rate and destination locally from the
+// hand-picked tier / sub-bracket / height / weight / direction.
+//
+// DUPLICATION WARNING: PhysiquePlan is the single source of truth for these
+// numbers. If you retune ANY of them in PhysiquePlan, retune them here too, or a
+// custom plan and a PhysiquePlan plan for the same client will disagree. The cut
+// deficit CAP is not duplicated here — the engine already applies its own
+// CUT_DEFICIT_CAP_BY_HEIGHTDIFF (identical values) downstream.
+// =====================================================
+
+// CUT rate: heightDiff band × muscle-preservation multiplier -> fractional bw / WEEK.
+const CUSTOM_CUT_RATE_BY_HEIGHTDIFF = [
+  { maxDiff: 70, rate: 0.010 },
+  { maxDiff: 80, rate: 0.009 },
+  { maxDiff: 90, rate: 0.007 },
+  { maxDiff: 100, rate: 0.006 },
+  { maxDiff: Infinity, rate: 0.005 },
+];
+const CUSTOM_CUT_PRESERVATION = {
+  novice: [1.00, 1.00, 0.98],
+  intermediate: [0.98, 0.96, 0.94],
+  proficient: [0.94, 0.92, 0.90],
+  advanced: [0.90, 0.88, 0.86],
+};
+
+// BULK rate: tier base × sub-bracket multiplier -> % bw / MONTH (divide by 100 for fraction).
+const CUSTOM_BULK_GAIN_RATE = { novice: 2.0, intermediate: 1.3, proficient: 0.8, advanced: 0.5 };
+const CUSTOM_BULK_SUBBRACKET_MULT = [1.15, 1.00, 0.85]; // [low, mid, high]
+
+// DESTINATION model.
+// Cut: cut-target zone (h − offset) shifted by the ±2 kg sub-bracket delta; cut
+// toward the zone midpoint, capped at 8% bodyweight per block, floored at the
+// lean end. So a heavy client's recommended cut destination is a block waypoint,
+// not the final lean weight (matches SS1 field 13).
+// Bulk: flat per-tier endpoint, h − offset, identical across sub-brackets.
+const CUSTOM_CUT_TARGET_OFFSET_BY_TIER = {
+  novice: [113, 111],       // [lean end, heavy end] -> cutTarget = [h-113, h-111]
+  intermediate: [109, 107],
+  proficient: [105, 103],
+  advanced: [101, 99],
+};
+const CUSTOM_SUBBRACKET_TARGET_DELTA_KG = [-2, 0, 2]; // [low, mid, high]
+const CUSTOM_CUT_BLOCK_CAP_PCT = 0.08;                // 8% bw per cut block
+const CUSTOM_BULK_DEST_OFFSET = { novice: 106, intermediate: 102, proficient: 98, advanced: 94 };
+
+// Fractional bodyweight change per WEEK (cut).
+function customCutRate(tier, subBracket, heightDiff) {
+  const band = CUSTOM_CUT_RATE_BY_HEIGHTDIFF.find((b) => heightDiff <= b.maxDiff)
+    || CUSTOM_CUT_RATE_BY_HEIGHTDIFF[CUSTOM_CUT_RATE_BY_HEIGHTDIFF.length - 1];
+  const pres = (CUSTOM_CUT_PRESERVATION[tier] || [1, 1, 1])[subBracket] ?? 1;
+  return band.rate * pres;
+}
+
+// Fractional bodyweight change per MONTH (bulk).
+function customBulkRate(tier, subBracket) {
+  const pct = (CUSTOM_BULK_GAIN_RATE[tier] ?? 0.8) * (CUSTOM_BULK_SUBBRACKET_MULT[subBracket] ?? 1);
+  return pct / 100;
+}
+
+// Recommended cut block destination (kg), or null when a cut is not coherent for
+// this client (already at/below the lean target).
+function customCutDestination(tier, subBracket, height, weight) {
+  const delta = CUSTOM_SUBBRACKET_TARGET_DELTA_KG[subBracket] ?? 0;
+  const offs = CUSTOM_CUT_TARGET_OFFSET_BY_TIER[tier] || CUSTOM_CUT_TARGET_OFFSET_BY_TIER.intermediate;
+  const lean = height - offs[0] + delta;   // leaner end (floor)
+  const heavy = height - offs[1] + delta;  // heavier end
+  const mid = (lean + heavy) / 2;
+  const totalLoss = Math.min(weight * CUSTOM_CUT_BLOCK_CAP_PCT, weight - mid);
+  const dest = Math.max(weight - totalLoss, lean);
+  if (!(dest < weight)) return null;       // no meaningful loss -> incoherent
+  return dest;
+}
+
+// Recommended bulk destination (kg), or null when a bulk is not coherent
+// (already at/above the tier endpoint).
+function customBulkDestination(tier, height, weight) {
+  const dest = height - (CUSTOM_BULK_DEST_OFFSET[tier] ?? 100);
+  if (!(dest > weight)) return null;
+  return dest;
+}
+
+// Sane bounds on the (overridable) rate field, so the duration readout can't go
+// absurd. The engine still caps the actual deficit/surplus independently.
+const CUSTOM_RATE_BOUNDS = {
+  cut: { min: 0.001, max: 0.015 },   // 0.1% – 1.5% bw / week
+  bulk: { min: 0.001, max: 0.030 },  // 0.1% – 3.0% bw / month
+};
+
+// Strength-slider copy, one line per slot (index 0 = Low-Novice ... 11 = High-Advanced).
+const STRENGTH_SLIDER_COPY = [
+  "You've done some lifting, but not consistently, and your numbers are still close to an untrained starting point.",
+  "You're stronger than the average untrained lifter. You've been training for a few months or more, but you don't look muscular yet and don't move much weight.",
+  "You've built a real base and sit near the top of the beginner range. You're close to the strength most consistent gym-goers reach, but not quite there.",
+  "You've just crossed out of the beginner range. Your lifts are clearly above a novice's and still climbing.",
+  "You've trained consistently for several months to several years. This is where most people who go to the gym regularly land.",
+  "You're one of the stronger regulars in a typical gym, near the top of the intermediate range. You lift more than most people around you.",
+  "You've moved past the average gym regular. Your strength reflects a deliberate focus most lifters never reach.",
+  "You've trained with a focus on strength for several years. You're stronger than most people in any commercial gym.",
+  "You're among the stronger lifters wherever you train, near the top of the proficient range and closing on advanced numbers.",
+  "You've reached a level few lifters get to. Years of structured training and dieting put you among the strongest in most gyms.",
+  "You've taken a consistent, structured approach to training and dieting for multiple years. You're among the strongest people in an average commercial gym.",
+  "You're at the top of the practical strength range. Very few lifters in any commercial gym match your numbers.",
+];
+
+// =====================================================
 // SHREDSMART CODE — decoder (schema v1)
 // Contract: SS1-<base64url(payload)>-<checksum>
 // payload = 14 fields joined by '|'. MUST mirror PhysiquePlan's encoder exactly.
@@ -710,7 +818,7 @@ const StepIndicator = ({ current, total }) => (
 // PLAN SETUP SCREENS
 // =====================================================
 
-const LandingScreen = ({ onStart, onCheckIn }) => (
+const LandingScreen = ({ onStart, onCheckIn, onCustom }) => (
   <Card className="max-w-3xl">
     <div className="grid md:grid-cols-2 gap-10 items-center">
       <div>
@@ -752,6 +860,12 @@ const LandingScreen = ({ onStart, onCheckIn }) => (
           className="mt-2 w-full bg-stone-50 hover:bg-stone-100 text-stone-900 font-medium py-3.5 px-6 rounded-full transition-colors text-sm border border-stone-200"
         >
           Check-in: Adjust my plan
+        </button>
+        <button
+          onClick={onCustom}
+          className="mt-2 w-full bg-stone-50 hover:bg-stone-100 text-stone-900 font-medium py-3.5 px-6 rounded-full transition-colors text-sm border border-stone-200"
+        >
+          Build a custom plan
         </button>
         <p className="text-xs text-stone-500 text-center mt-3">Takes about 3 minutes.</p>
       </div>
@@ -1052,6 +1166,295 @@ const DetailsScreen = ({ onContinue, currentStep, totalSteps, onBack }) => {
   );
 };
 
+// =====================================================
+// CUSTOM PLAN — hand-picked inputs (no SS1 code)
+// Bare macro calculator. Collects the fields SS1 would ship (strength tier via a
+// 12-stop slider, height, weight, direction, rate, destination), builds a
+// decoded-shaped object, and hands off to the SAME details -> loading -> results
+// pipeline as the code flow. Recommended rate and destination mirror
+// PhysiquePlan (grayed-out defaults, fully overridable).
+// =====================================================
+const CustomPlanScreen = ({ units, onBuilt, onBack }) => {
+  const imperial = units === 'imperial';
+  const wUnit = imperial ? 'lb' : 'kg';
+
+  const [sliderPos, setSliderPos] = useState(4); // Mid-Intermediate
+  const [heightCmInput, setHeightCmInput] = useState('');
+  const [ft, setFt] = useState('');
+  const [inch, setInch] = useState('');
+  const [weightInput, setWeightInput] = useState('');
+  const [direction, setDirection] = useState('cut');
+
+  const [ratePct, setRatePct] = useState('');
+  const [rateConcrete, setRateConcrete] = useState('');
+  const [rateTouched, setRateTouched] = useState(false);
+
+  const [destInput, setDestInput] = useState('');
+  const [destTouched, setDestTouched] = useState(false);
+
+  const tierIdx = Math.floor(sliderPos / 3);
+  const subBracket = sliderPos % 3;
+  const tier = TIER_NAME[tierIdx];
+  const tierLabel = subBracketTierLabel(tier, subBracket);
+
+  const heightCm = imperial
+    ? (ft !== '' && inch !== '' ? ftInToCm(ft, inch) : NaN)
+    : (heightCmInput !== '' ? parseFloat(heightCmInput) : NaN);
+  const weightKg = weightInput !== ''
+    ? (imperial ? lbToKg(parseFloat(weightInput)) : parseFloat(weightInput))
+    : NaN;
+  const haveHW = Number.isFinite(heightCm) && Number.isFinite(weightKg) && heightCm > 0 && weightKg > 0;
+  const heightDiff = haveHW ? heightCm - weightKg : NaN;
+
+  const dispW = (kg) => imperial ? Math.round(kgToLb(kg) * 100) / 100 : Math.round(kg * 100) / 100;
+  const toKg = (v) => imperial ? lbToKg(parseFloat(v)) : parseFloat(v);
+
+  const recRate = direction === 'cut'
+    ? (haveHW ? customCutRate(tier, subBracket, heightDiff) : null)
+    : customBulkRate(tier, subBracket);
+  const recDestKg = !haveHW ? null : (direction === 'cut'
+    ? customCutDestination(tier, subBracket, heightCm, weightKg)
+    : customBulkDestination(tier, heightCm, weightKg));
+
+  const period = direction === 'cut' ? 'week' : 'month';
+
+  // Auto-fill the rate default while untouched.
+  useEffect(() => {
+    if (rateTouched) return;
+    if (recRate == null) { setRatePct(''); setRateConcrete(''); return; }
+    setRatePct((recRate * 100).toFixed(2));
+    setRateConcrete(Number.isFinite(weightKg) ? String(dispW(weightKg * recRate)) : '');
+  }, [recRate, weightKg, rateTouched]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-fill the destination default while untouched.
+  useEffect(() => {
+    if (destTouched) return;
+    setDestInput(recDestKg != null ? String(dispW(recDestKg)) : '');
+  }, [recDestKg, destTouched]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onPct = (v) => {
+    setRateTouched(true);
+    setRatePct(v);
+    if (v !== '' && Number.isFinite(weightKg)) setRateConcrete(String(dispW(weightKg * parseFloat(v) / 100)));
+    else setRateConcrete('');
+  };
+  const onConcrete = (v) => {
+    setRateTouched(true);
+    setRateConcrete(v);
+    if (v !== '' && Number.isFinite(weightKg) && weightKg > 0) setRatePct((toKg(v) / weightKg * 100).toFixed(2));
+    else setRatePct('');
+  };
+  const changeDirection = (d) => {
+    setDirection(d);
+    setRateTouched(false);   // refill defaults for the new direction
+    setDestTouched(false);
+  };
+
+  const rateFrac = ratePct !== '' ? parseFloat(ratePct) / 100 : NaN;
+  const bounds = CUSTOM_RATE_BOUNDS[direction];
+  const rateInRange = Number.isFinite(rateFrac) && rateFrac >= bounds.min && rateFrac <= bounds.max;
+
+  const destKg = destInput !== '' ? toKg(destInput) : null;
+  const destValid = destKg == null
+    ? true
+    : (Number.isFinite(destKg) && destKg > 0 && (direction === 'cut' ? destKg < weightKg : destKg > weightKg));
+
+  const canContinue = haveHW && rateInRange && destValid;
+
+  const recPctStr = recRate != null ? (recRate * 100).toFixed(2) : null;
+  const recConcreteStr = (recRate != null && Number.isFinite(weightKg)) ? dispW(weightKg * recRate) : null;
+  const recDestStr = recDestKg != null ? dispW(recDestKg) : null;
+
+  const mutedInput = 'text-stone-400';
+  const liveInput = 'text-stone-900';
+  const inputBase = 'mt-1 w-full px-4 py-3 rounded-lg border border-stone-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500';
+
+  const build = () => {
+    if (!canContinue) return;
+    onBuilt({
+      units,
+      sex: 'm',
+      height: Math.round(heightCm),
+      weight: weightKg,
+      tier,
+      tierIdx,
+      score: 0,
+      subBracket,
+      archetypeId: -1,          // no archetype narrative on custom plans
+      direction,
+      goalLow: undefined,       // no north-star range on custom plans
+      goalHigh: undefined,
+      genDate: genDateStr(),
+      destWeight: destKg == null ? undefined : destKg,
+      rate: rateFrac,
+    });
+  };
+
+  return (
+    <Card>
+      <BackButton onClick={onBack} />
+      <StepIndicator current={1} total={2} />
+      <span className="text-xs font-semibold text-stone-400 tracking-widest uppercase">STEP 1 OF 2</span>
+      <h2 className="mt-2 text-2xl font-bold text-stone-900">Build a custom plan</h2>
+      <p className="text-stone-600 mt-2 text-sm">Set the strength profile and goal by hand. No PhysiquePlan™ code needed.</p>
+
+      <div className="space-y-6 mt-6">
+        {/* Strength slider */}
+        <div>
+          <div className="flex items-baseline justify-between">
+            <label className="text-sm font-medium text-stone-700">Strength tier</label>
+            <span className="text-sm font-bold text-orange-600">{tierLabel}</span>
+          </div>
+          {/* Range with sub-bracket ticks overlaid on the track (one per stop,
+              12 total). The active stop's tick is hidden so the thumb sits clean. */}
+          <div className="relative mt-3">
+            <input
+              type="range"
+              min={0}
+              max={11}
+              step={1}
+              value={sliderPos}
+              onChange={(e) => setSliderPos(parseInt(e.target.value))}
+              className="relative z-10 w-full accent-orange-500 cursor-pointer"
+            />
+            <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 z-20 flex justify-between px-2">
+              {Array.from({ length: 12 }).map((_, i) => (
+                <div key={i} className={`w-0.5 h-2 rounded-full ${i === sliderPos ? 'opacity-0' : 'bg-stone-400'}`} />
+              ))}
+            </div>
+          </div>
+          <div className="flex justify-between text-[11px] text-stone-400 mt-1">
+            <span>Low-Novice</span>
+            <span>High-Advanced</span>
+          </div>
+          <div className="mt-3 bg-stone-50 border border-stone-200 rounded-lg p-3 min-h-[64px]">
+            <p className="text-sm text-stone-600">{STRENGTH_SLIDER_COPY[sliderPos]}</p>
+          </div>
+          <p className="text-xs text-stone-500 mt-2">A proxy for muscle development. Slide to the level that fits best. It doesn't need to be exact.</p>
+        </div>
+
+        {/* Height */}
+        <div>
+          <label className="text-sm font-medium text-stone-700">Height</label>
+          {imperial ? (
+            <div className="grid grid-cols-2 gap-3 mt-1">
+              <div className="relative">
+                <input type="number" value={ft} onChange={(e) => setFt(e.target.value)} placeholder="ft" className={inputBase + ' ' + liveInput} />
+              </div>
+              <div className="relative">
+                <input type="number" value={inch} onChange={(e) => setInch(e.target.value)} placeholder="in" className={inputBase + ' ' + liveInput} />
+              </div>
+            </div>
+          ) : (
+            <input type="number" value={heightCmInput} onChange={(e) => setHeightCmInput(e.target.value)} placeholder="e.g. 178" className={inputBase + ' ' + liveInput} />
+          )}
+        </div>
+
+        {/* Weight */}
+        <div>
+          <label className="text-sm font-medium text-stone-700">Current weight ({wUnit})</label>
+          <input type="number" value={weightInput} onChange={(e) => setWeightInput(e.target.value)} placeholder={imperial ? 'e.g. 176' : 'e.g. 80'} className={inputBase + ' ' + liveInput} />
+        </div>
+
+        {/* Direction */}
+        <div>
+          <label className="text-sm font-medium text-stone-700">Direction</label>
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            {[
+              { id: 'cut', label: 'Cut', sub: 'Lose fat' },
+              { id: 'bulk', label: 'Lean bulk', sub: 'Build muscle' },
+            ].map(opt => (
+              <button
+                key={opt.id}
+                onClick={() => changeDirection(opt.id)}
+                className={`text-left p-3 rounded-lg border transition-colors ${
+                  direction === opt.id ? 'border-orange-500 bg-orange-50' : 'border-stone-200 hover:border-orange-500 hover:bg-orange-50'
+                }`}
+              >
+                <div className="font-medium text-stone-900 text-sm">{opt.label}</div>
+                <div className="text-xs text-stone-500">{opt.sub}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Rate of change */}
+        <div>
+          <div className="flex items-baseline justify-between">
+            <label className="text-sm font-medium text-stone-700">Rate of change</label>
+            {rateTouched && recPctStr && (
+              <button onClick={() => setRateTouched(false)} className="text-xs text-orange-600 hover:text-orange-700 underline underline-offset-2">
+                Use recommended
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-1">
+            <div>
+              <input
+                type="number"
+                value={ratePct}
+                onChange={(e) => onPct(e.target.value)}
+                placeholder="% bw"
+                className={inputBase + ' ' + (rateTouched ? liveInput : mutedInput)}
+              />
+              <p className="text-[11px] text-stone-400 mt-1">% of bodyweight / {period}</p>
+            </div>
+            <div>
+              <input
+                type="number"
+                value={rateConcrete}
+                onChange={(e) => onConcrete(e.target.value)}
+                placeholder={wUnit}
+                className={inputBase + ' ' + (rateTouched ? liveInput : mutedInput)}
+              />
+              <p className="text-[11px] text-stone-400 mt-1">{wUnit} / {period}</p>
+            </div>
+          </div>
+          {recPctStr
+            ? <p className="text-xs text-stone-500 mt-2">Recommended for {tierLabel}: {recPctStr}% / {period}{recConcreteStr != null ? ` (~${recConcreteStr} ${wUnit})` : ''}. Edit either field to override.</p>
+            : <p className="text-xs text-stone-500 mt-2">Enter height and weight to see the recommended cut rate.</p>}
+          {!rateInRange && ratePct !== '' && (
+            <p className="text-xs text-red-500 mt-1">
+              Keep the rate between {(bounds.min * 100).toFixed(1)}% and {(bounds.max * 100).toFixed(1)}% of bodyweight per {period}.
+            </p>
+          )}
+        </div>
+
+        {/* Destination */}
+        <div>
+          <div className="flex items-baseline justify-between">
+            <label className="text-sm font-medium text-stone-700">Destination weight ({wUnit})</label>
+            {destTouched && recDestStr != null && (
+              <button onClick={() => setDestTouched(false)} className="text-xs text-orange-600 hover:text-orange-700 underline underline-offset-2">
+                Use recommended
+              </button>
+            )}
+          </div>
+          <input
+            type="number"
+            value={destInput}
+            onChange={(e) => { setDestTouched(true); setDestInput(e.target.value); }}
+            placeholder={imperial ? 'e.g. 172' : 'e.g. 78'}
+            className={inputBase + ' ' + (destTouched ? liveInput : mutedInput)}
+          />
+          {recDestStr != null
+            ? <p className="text-xs text-stone-500 mt-2">Recommended block target: {recDestStr} {wUnit}. Sets the duration readout only, it doesn't change your calories. Optional.</p>
+            : <p className="text-xs text-stone-500 mt-2">Optional. Sets the duration readout only. Leave blank to skip it.</p>}
+          {!destValid && (
+            <p className="text-xs text-red-500 mt-1">
+              A {direction === 'cut' ? 'cut destination must be below' : 'bulk destination must be above'} the current weight.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <PrimaryButton onClick={build} disabled={!canContinue} className="mt-7">
+        Continue <ArrowRight className="w-4 h-4" />
+      </PrimaryButton>
+    </Card>
+  );
+};
+
 const LoadingScreen = ({ message = 'Calculating your targets...' }) => (
   <Card>
     <div className="text-center py-8">
@@ -1086,11 +1489,12 @@ const QAItem = ({ question, children }) => {
   );
 };
 
-const ResultsScreen = ({ result, units, onRestart, onBack }) => {
+const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => {
   const direction = result.direction;
   const isCut = direction === 'cut';
   const tierLabel = subBracketTierLabel(result.tier, result.subBracket);
   const { weeks: planWeeks, label: durationLabel } = formatDuration(result.durationWeeks);
+  const hasDest = Number.isFinite(result.destWeight) && result.destWeight > 0 && Number.isFinite(result.durationWeeks) && result.durationWeeks > 0;
   const mealFrameCode = buildMacroMetricCode(result, units);
   const [copied, setCopied] = useState(false);
 
@@ -1223,14 +1627,28 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
           )}
         </div>
 
-        {/* Plan target leads; ultimate goal stays as the north star */}
-        <div className="mt-4 bg-stone-50 border border-stone-200 rounded-xl p-5">
-          <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your plan target weight</div>
-          <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeightWhole(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
-          <p className="text-sm text-stone-600 mt-2">
-            This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your next physique milestone which is to be lean at a body weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan™), but for now, aim here.
-          </p>
-        </div>
+        {/* Plan target + duration. SS1 shows the north-star goal range; a custom
+            plan is a bare calculator, so it shows only the block target and omits
+            the block entirely when no destination was entered. */}
+        {custom ? (
+          hasDest ? (
+            <div className="mt-4 bg-stone-50 border border-stone-200 rounded-xl p-5">
+              <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your plan target weight</div>
+              <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeightWhole(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
+              <p className="text-sm text-stone-600 mt-2">
+                This is where this plan takes you at the pace above. Your job for the next {durationLabel}.
+              </p>
+            </div>
+          ) : null
+        ) : (
+          <div className="mt-4 bg-stone-50 border border-stone-200 rounded-xl p-5">
+            <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your plan target weight</div>
+            <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeightWhole(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
+            <p className="text-sm text-stone-600 mt-2">
+              This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your next physique milestone which is to be lean at a body weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan™), but for now, aim here.
+            </p>
+          </div>
+        )}
 
         {/* Reminder of the principle */}
         <div className="mt-4 bg-orange-50 border border-orange-200 rounded-xl p-5">
@@ -1332,7 +1750,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack }) => {
           </div>
 
           <button onClick={onRestart} className="text-xs text-stone-500 hover:text-stone-700 mt-4 underline underline-offset-2">
-            Start over with a new code
+            {custom ? 'Start over' : 'Start over with a new code'}
           </button>
         </div>
       </div>
@@ -2207,6 +2625,7 @@ export default function App() {
   const [codeError, setCodeError] = useState(null);   // for URL-prefill failures
   const [details, setDetails] = useState({});         // age + activity
   const [result, setResult] = useState(null);
+  const [customMode, setCustomMode] = useState(false); // true = custom-plan branch (no SS1 code)
 
   const [checkInResult, setCheckInResult] = useState(null);
   const [checkInDirection, setCheckInDirection] = useState(null);
@@ -2270,6 +2689,7 @@ export default function App() {
     setCodeError(null);
     setDetails({});
     setResult(null);
+    setCustomMode(false);
     setCheckInResult(null);
     setCheckInDirection(null);
     setIngestedPlan(null);
@@ -2321,8 +2741,24 @@ export default function App() {
     <Container>
       {screen === 'landing' && (
         <LandingScreen
-          onStart={() => setScreen('code')}
+          onStart={() => { setCustomMode(false); setScreen('code'); }}
           onCheckIn={() => setScreen('checkin_code')}
+          onCustom={() => { setCustomMode(true); setScreen('custom_units'); }}
+        />
+      )}
+
+      {/* CUSTOM PLAN FLOW */}
+      {screen === 'custom_units' && (
+        <UnitsScreen
+          onSelect={(u) => { setUnits(u); setScreen('custom_input'); }}
+          onBack={() => setScreen('landing')}
+        />
+      )}
+      {screen === 'custom_input' && (
+        <CustomPlanScreen
+          units={units}
+          onBuilt={(d) => { setDecoded(d); setUnits(d.units); setScreen('details'); }}
+          onBack={() => setScreen('custom_units')}
         />
       )}
 
@@ -2358,10 +2794,10 @@ export default function App() {
       )}
       {screen === 'details' && (
         <DetailsScreen
-          currentStep={1}
-          totalSteps={1}
+          currentStep={customMode ? 2 : 1}
+          totalSteps={customMode ? 2 : 1}
           onContinue={(data) => { setDetails(data); setScreen('loading'); }}
-          onBack={() => setScreen('principle')}
+          onBack={() => setScreen(customMode ? 'custom_input' : 'principle')}
         />
       )}
       {screen === 'loading' && <LoadingScreen />}
@@ -2369,6 +2805,7 @@ export default function App() {
         <ResultsScreen
           result={result}
           units={units}
+          custom={customMode}
           onRestart={restart}
           onBack={() => setScreen('details')}
         />
