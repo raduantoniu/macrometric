@@ -1896,7 +1896,6 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
   const [height, setHeight] = useState(prefill.height || '');
   const [proteinTarget, setProteinTarget] = useState(prefill.proteinTarget || '');
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [waist2w, setWaist2w] = useState('');
   const [waistNow, setWaistNow] = useState('');
   const [strengthUp, setStrengthUp] = useState(null);
@@ -2049,62 +2048,55 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
             />
           </div>
 
-          {/* Advanced inputs */}
+          {/* Optional inputs — recomp detection */}
           <div className="border-t border-stone-200 pt-4">
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="w-full flex items-center justify-between text-left"
-            >
-              <div>
-                <div className="font-medium text-stone-900 text-sm">Help MacroMetric be more accurate</div>
-                <div className="text-xs text-stone-500 mt-0.5">Unlock recomp detection — prevents being told to cut harder when you're already winning</div>
-              </div>
-              {showAdvanced ? <ChevronUp className="w-4 h-4 text-stone-500" /> : <ChevronDown className="w-4 h-4 text-stone-500" />}
-            </button>
+            <div className="flex items-center gap-2">
+              <div className="font-medium text-stone-900 text-sm">Help MacroMetric be more accurate</div>
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-stone-400 border border-stone-200 rounded px-1.5 py-0.5">Optional</span>
+            </div>
+            <div className="text-xs text-stone-500 mt-0.5">Unlock recomp detection — prevents being told to cut harder when you're already winning</div>
 
-            {showAdvanced && (
-              <div className="space-y-4 mt-4 pl-3 border-l-2 border-orange-200">
-                <div>
-                  <label className="text-sm font-medium text-stone-700">Waist 2 weeks ago ({unitWaist})</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={waist2w}
-                    onChange={(e) => setWaist2w(e.target.value)}
-                    placeholder={units === 'metric' ? 'e.g. 85.0' : 'e.g. 33.5'}
-                    className="mt-1 w-full px-4 py-3 rounded-lg border border-stone-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-stone-700">Waist this week ({unitWaist})</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={waistNow}
-                    onChange={(e) => setWaistNow(e.target.value)}
-                    placeholder={units === 'metric' ? 'e.g. 84.0' : 'e.g. 33.0'}
-                    className="mt-1 w-full px-4 py-3 rounded-lg border border-stone-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-stone-700">Is your strength going up?</label>
-                  <p className="text-xs text-stone-500 mt-0.5">More reps or load on most lifts compared to 2 weeks ago</p>
-                  <div className="grid grid-cols-2 gap-2 mt-2">
-                    {[{ v: true, l: 'Yes' }, { v: false, l: 'No' }].map((opt) => (
-                      <button
-                        key={opt.l}
-                        onClick={() => setStrengthUp(opt.v)}
-                        className={`p-3 rounded-lg border transition-colors ${
-                          strengthUp === opt.v ? 'border-orange-500 bg-orange-50' : 'border-stone-200 hover:border-orange-500 hover:bg-orange-50'
-                        }`}
-                      >
-                        <span className="font-medium text-stone-900 text-sm">{opt.l}</span>
-                      </button>
-                    ))}
-                  </div>
+            <div className="space-y-4 mt-4 pl-3 border-l-2 border-orange-200">
+              <div>
+                <label className="text-sm font-medium text-stone-700">Waist 2 weeks ago ({unitWaist})</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={waist2w}
+                  onChange={(e) => setWaist2w(e.target.value)}
+                  placeholder={units === 'metric' ? 'e.g. 85.0' : 'e.g. 33.5'}
+                  className="mt-1 w-full px-4 py-3 rounded-lg border border-stone-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-stone-700">Waist this week ({unitWaist})</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={waistNow}
+                  onChange={(e) => setWaistNow(e.target.value)}
+                  placeholder={units === 'metric' ? 'e.g. 84.0' : 'e.g. 33.0'}
+                  className="mt-1 w-full px-4 py-3 rounded-lg border border-stone-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-stone-700">Is your strength going up?</label>
+                <p className="text-xs text-stone-500 mt-0.5">More reps or load on most lifts compared to 2 weeks ago</p>
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  {[{ v: true, l: 'Yes' }, { v: false, l: 'No' }].map((opt) => (
+                    <button
+                      key={opt.l}
+                      onClick={() => setStrengthUp(opt.v)}
+                      className={`p-3 rounded-lg border transition-colors ${
+                        strengthUp === opt.v ? 'border-orange-500 bg-orange-50' : 'border-stone-200 hover:border-orange-500 hover:bg-orange-50'
+                      }`}
+                    >
+                      <span className="font-medium text-stone-900 text-sm">{opt.l}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
-            )}
+            </div>
           </div>
         </div>
 
