@@ -69,8 +69,23 @@ function formatDuration(weeks) {
 // --- MAINTENANCE: muscle-mass adjustment -------------------------------------
 const TIER_MAINTENANCE_ADJ = { novice: 0, intermediate: 40, proficient: 80, advanced: 120 }; // kcal/day
 
-// Per-step NET cost above resting.
-const STEPS_KCAL_PER_STEP = 0.03;
+// Per-step NET cost above resting, scaled to bodyweight.
+// Source: Weyand et al. 2010, "The mass-specific energy cost of human walking
+// is set by stature" (J Exp Biol). Metabolic cost per STRIDE is stature-
+// invariant at 2.74 J/kg/stride. One stride = 2 steps, so per step count:
+//   kcal = 2.74 (J/kg/stride) x weight(kg) x (steps / 2) / 4184 (J/kcal)
+//        = 2.74 x weight x steps / 8368
+// This is a NET cost (above resting), so it adds on top of BMR/NEAT rather
+// than replacing any of it. No height term is needed: two people of the same
+// weight burn the same per step regardless of height (shorter people simply
+// take more steps to cover the same distance).
+const STEP_J_PER_KG_PER_STRIDE = 2.74;
+const J_PER_KCAL = 4184;
+const STEPS_PER_STRIDE = 2;
+
+function calcStepsKcal(weightKg, steps) {
+  return (STEP_J_PER_KG_PER_STRIDE * weightKg * steps) / (J_PER_KCAL * STEPS_PER_STRIDE);
+}
 
 const WORKOUT_KCAL = 200; // per resistance-training session
 
@@ -490,7 +505,7 @@ function calculateMaintenance({ weight, height, age, workouts, cardio, steps, jo
   const neat = bmr * 0.20;
   const workoutsKcal = (workouts * WORKOUT_KCAL) / 7;
   const cardioKcal = (cardio * CARDIO_KCAL_PER_MIN) / 7;
-  const stepsKcal = steps * STEPS_KCAL_PER_STEP;
+  const stepsKcal = calcStepsKcal(weight, steps);
   const jobKcal = { desk: 0, feet: 100, physical: 200 }[job];
   const muscleAdj = TIER_MAINTENANCE_ADJ[tier] ?? 0;
   const subtotal = bmr + neat + workoutsKcal + cardioKcal + stepsKcal + jobKcal + muscleAdj;
@@ -1521,6 +1536,13 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
   const fatPct = Math.round((fatKcal / totalKcal) * 100);
   const carbsPct = 100 - proteinPct - fatPct;
 
+  // Reconcile the three headline numbers. Target is the source of truth (it
+  // drives the macros and is what the client eats). Maintenance is shown
+  // rounded, and the surplus/deficit is derived from the two numbers actually
+  // on screen, so target = maintenance +/- delta holds exactly after rounding.
+  const maintenanceDisplay = roundUpTo50(result.maintenance);
+  const deltaDisplay = Math.abs(maintenanceDisplay - result.target);
+
   return (
     <Card className="max-w-2xl">
       <BackButton onClick={onBack} />
@@ -1543,12 +1565,12 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
           <div className="mt-4 pt-4 border-t border-orange-200 grid grid-cols-2 gap-3 text-sm">
             <div>
               <div className="text-xs text-stone-500 uppercase tracking-wider">Maintenance</div>
-              <div className="font-semibold text-stone-900">{roundUpTo50(result.maintenance)} kcal</div>
+              <div className="font-semibold text-stone-900">{maintenanceDisplay} kcal</div>
             </div>
             <div>
               <div className="text-xs text-stone-500 uppercase tracking-wider">{isCut ? 'Daily deficit' : 'Daily surplus'}</div>
               <div className="font-semibold text-stone-900">
-                {isCut ? '−' : '+'}{roundUpTo50(Math.abs(result.maintenance - result.target))} kcal
+                {isCut ? '−' : '+'}{deltaDisplay} kcal
               </div>
             </div>
           </div>
