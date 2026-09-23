@@ -332,7 +332,7 @@ function genDateAgeWeeks(genDate) {
 
 // =====================================================
 // MACROMETRIC CODE — encoder (schema MM1)
-// The handoff to MealFrame™, mirroring the SS1 design. Carries MacroMetric's
+// The handoff to MealFrame, mirroring the SS1 design. Carries MacroMetric's
 // COMPUTED outputs (target/macros/fiber/maintenance) PLUS pass-through fields
 // so downstream apps never re-decode SS1, INCLUDING the rate (field 14) so a
 // returning check-in pre-fills the target rate by reading it — MacroMetric no
@@ -769,15 +769,15 @@ const Header = () => (
   <header className="w-full px-6 py-4 flex items-center justify-between border-b border-stone-200 bg-white">
     <div className="flex items-center gap-2.5">
       <Logo size={32} />
-      <span className="font-semibold text-stone-900 tracking-tight">ShredSmart™</span>
+      <span className="font-semibold text-stone-900 tracking-tight">ShredSmart</span>
     </div>
-    <span className="text-xs text-stone-500 tracking-wider">MacroMetric™</span>
+    <span className="text-xs text-stone-500 tracking-wider">MacroMetric</span>
   </header>
 );
 
 const Footer = () => (
   <footer className="w-full px-6 py-4 border-t border-stone-200 bg-white text-xs text-stone-500 flex justify-between">
-    <span>ShredSmart™</span>
+    <span>ShredSmart</span>
     <span>by Radu Antoniu</span>
   </footer>
 );
@@ -837,7 +837,7 @@ const LandingScreen = ({ onStart, onCheckIn, onCustom }) => (
   <Card className="max-w-3xl">
     <div className="grid md:grid-cols-2 gap-10 items-center">
       <div>
-        <span className="text-xs font-semibold text-orange-600 tracking-widest">MacroMetric™</span>
+        <span className="text-xs font-semibold text-orange-600 tracking-widest">MacroMetric</span>
         <h1 className="mt-3 text-4xl md:text-5xl font-bold text-stone-900 tracking-tight leading-tight">
           Get your <em className="italic font-semibold text-orange-600">nutrition targets</em>.
         </h1>
@@ -891,23 +891,23 @@ const LandingScreen = ({ onStart, onCheckIn, onCustom }) => (
 // --- CODE INGESTION (replaces units + physique-check + archetype + direction) ---
 
 const CODE_ERROR_COPY = {
-  version: "This code is from a newer version of PhysiquePlan™. Re-run PhysiquePlan to get a compatible code.",
-  checksum: "That code doesn't look right — a character may be off. Copy it again from your PhysiquePlan™ blueprint, or use the “Continue to MacroMetric™” button there to skip typing.",
-  corrupt: "That code couldn't be read. Copy it again from your PhysiquePlan™ blueprint, or use the “Continue to MacroMetric™” button there.",
-  format: "That doesn't look like a ShredSmart code. It should start with “SS1-”. Copy it again from your PhysiquePlan™ blueprint.",
-  fields: "That code is incomplete or from an older version of PhysiquePlan™. Re-run PhysiquePlan to get a current code.",
+  version: "This code is from a newer version of PhysiquePlan. Re-run PhysiquePlan to get a compatible code.",
+  checksum: "That code doesn't look right — a character may be off. Copy it again from your PhysiquePlan blueprint, or use the “Continue to MacroMetric” button there to skip typing.",
+  corrupt: "That code couldn't be read. Copy it again from your PhysiquePlan blueprint, or use the “Continue to MacroMetric” button there.",
+  format: "That doesn't look like a ShredSmart code. It should start with “SS1-”. Copy it again from your PhysiquePlan blueprint.",
+  fields: "That code is incomplete or from an older version of PhysiquePlan. Re-run PhysiquePlan to get a current code.",
   empty: "Paste your code to continue.",
 };
 
 // Error copy for the MM1 code the CHECK-IN flow ingests.
 const MM_CODE_ERROR_COPY = {
-  version: "This code is from a newer version of MacroMetric™. Re-run your MacroMetric plan to get a compatible code.",
-  wrongcode: "That looks like a PhysiquePlan™ code (SS1), not a MacroMetric™ code. Paste the MacroMetric code from the end of your plan or your last check-in.",
-  checksum: "That code doesn't look right — a character may be off. Copy it again from MacroMetric™ (end of your plan, or your last check-in result).",
-  corrupt: "That code couldn't be read. Copy it again from MacroMetric™.",
-  format: "That doesn't look like a MacroMetric™ code. It should start with “MM1-”.",
-  fields: "That code is incomplete or from an older version of MacroMetric™. Re-run your MacroMetric plan to get a current code.",
-  empty: "Paste your MacroMetric™ code to continue.",
+  version: "This code is from a newer version of MacroMetric. Re-run your MacroMetric plan to get a compatible code.",
+  wrongcode: "That looks like a PhysiquePlan code (SS1), not a MacroMetric code. Paste the MacroMetric code from the end of your plan or your last check-in.",
+  checksum: "That code doesn't look right — a character may be off. Copy it again from MacroMetric (end of your plan, or your last check-in result).",
+  corrupt: "That code couldn't be read. Copy it again from MacroMetric.",
+  format: "That doesn't look like a MacroMetric code. It should start with “MM1-”.",
+  fields: "That code is incomplete or from an older version of MacroMetric. Re-run your MacroMetric plan to get a current code.",
+  empty: "Paste your MacroMetric code to continue.",
 };
 
 const PLAN_URL = 'https://plan.raduantoniu.com';
@@ -930,7 +930,7 @@ const CodeScreen = ({ initialCode = '', initialError = null, onDecoded, onBack }
       <BackButton onClick={onBack} />
       <div>
         <span className="text-xs font-semibold text-stone-400 tracking-widest uppercase">Bring your plan over</span>
-        <h2 className="mt-2 text-2xl font-bold text-stone-900">Paste your PhysiquePlan™ code</h2>
+        <h2 className="mt-2 text-2xl font-bold text-stone-900">Paste your PhysiquePlan code</h2>
         <p className="text-stone-600 mt-2 text-sm">
           PhysiquePlan generated a code at the bottom of your blueprint. Paste it here and MacroMetric pre-fills everything — your stats, your strength tier, your direction. No re-entering anything.
         </p>
@@ -962,7 +962,7 @@ const CodeScreen = ({ initialCode = '', initialError = null, onDecoded, onBack }
           rel="noopener noreferrer"
           className="mt-2 w-full bg-stone-100 hover:bg-stone-200 text-stone-900 font-medium py-3.5 px-6 rounded-full transition-colors text-center flex items-center justify-center gap-2 text-sm"
         >
-          I don't have a code — do PhysiquePlan™ first <ExternalLink className="w-4 h-4" />
+          I don't have a code — do PhysiquePlan first <ExternalLink className="w-4 h-4" />
         </a>
       </div>
     </Card>
@@ -975,7 +975,7 @@ const StalenessNotice = ({ weeks, onRerun }) => (
     <div className="text-sm text-stone-700">
       <span className="font-medium text-stone-900">These numbers are a few months old.</span> Your plan was generated about {Math.round(weeks / 4)} months ago — your body has likely moved on. You can proceed, but a fresh PhysiquePlan read will be more accurate.
       <button onClick={onRerun} className="mt-2 text-amber-700 font-medium underline underline-offset-2 hover:text-amber-800">
-        Re-run PhysiquePlan™
+        Re-run PhysiquePlan
       </button>
     </div>
   </div>
@@ -1311,7 +1311,7 @@ const CustomPlanScreen = ({ units, onBuilt, onBack }) => {
       <StepIndicator current={1} total={2} />
       <span className="text-xs font-semibold text-stone-400 tracking-widest uppercase">STEP 1 OF 2</span>
       <h2 className="mt-2 text-2xl font-bold text-stone-900">Build a custom plan</h2>
-      <p className="text-stone-600 mt-2 text-sm">Set the strength profile and goal by hand. No PhysiquePlan™ code needed.</p>
+      <p className="text-stone-600 mt-2 text-sm">Set the strength profile and goal by hand. No PhysiquePlan code needed.</p>
 
       <div className="space-y-6 mt-6">
         {/* Strength slider */}
@@ -1667,7 +1667,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
             <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your plan target weight</div>
             <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeightWhole(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
             <p className="text-sm text-stone-600 mt-2">
-              This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your next physique milestone which is to be lean at a body weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan™), but for now, aim here.
+              This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your next physique milestone which is to be lean at a body weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan), but for now, aim here.
             </p>
           </div>
         )}
@@ -1679,7 +1679,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
             Hit your calories and protein every day. Fat and carbs can fluctuate — just keep them above the floors. That's it.
           </p>
           <p className="text-sm text-stone-700 mt-2 leading-relaxed">
-            As your body weight changes, return to MacroMetric™ to adjust your targets (weekly check-in when cutting / monthly check-in when bulking).
+            As your body weight changes, return to MacroMetric to adjust your targets (weekly check-in when cutting / monthly check-in when bulking).
           </p>
         </div>
 
@@ -1747,8 +1747,8 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
 
         {/* MealFrame code — paste fallback, mirrors PhysiquePlan's handoff */}
         <div className="bg-stone-900 rounded-xl p-5 text-center">
-          <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your MacroMetric™ Code - Save this!</h4>
-          <p className="text-stone-400 text-xs mt-1">This code represents all your current data and we use it to build your meal plan in MealFrame™. You also use it to adjust your numbers during your check-ins here in MacroMetric™. Save it in your notes!</p>
+          <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your MacroMetric Code - Save this!</h4>
+          <p className="text-stone-400 text-xs mt-1">This code represents all your current data and we use it to build your meal plan in MealFrame. You also use it to adjust your numbers during your check-ins here in MacroMetric. Save it in your notes!</p>
           <div className="mt-3 bg-stone-800 border border-stone-700 rounded-lg px-3 py-3">
             <code className="text-orange-300 text-xs break-all leading-relaxed">{mealFrameCode}</code>
           </div>
@@ -1763,11 +1763,11 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
         <div className="text-center mt-6">
           <h3 className="text-xl font-bold text-stone-900">What's next?</h3>
           <p className="text-stone-600 mt-2 text-sm leading-relaxed">
-            Continue to <strong>MealFrame™</strong> to turn these numbers into a meal structure that fits your life.
+            Continue to <strong>MealFrame</strong> to turn these numbers into a meal structure that fits your life.
           </p>
           <div className="space-y-2 mt-5">
             <PrimaryButton onClick={goToMealFrame}>
-              Continue to MealFrame™ <ArrowRight className="w-4 h-4" />
+              Continue to MealFrame <ArrowRight className="w-4 h-4" />
             </PrimaryButton>
           </div>
 
@@ -1802,13 +1802,13 @@ const CheckInCodeScreen = ({ onDecoded, onManual, onBack }) => {
       <BackButton onClick={onBack} />
       <div>
         <span className="text-xs font-semibold text-stone-400 tracking-widest uppercase">Check-in</span>
-        <h2 className="mt-2 text-2xl font-bold text-stone-900">Paste your MacroMetric™ code</h2>
+        <h2 className="mt-2 text-2xl font-bold text-stone-900">Paste your MacroMetric code</h2>
         <p className="text-stone-600 mt-2 text-sm">
-          Use the code from the end of your plan — or from your last check-in. MacroMetric pre-fills your current numbers, so you only enter this period's measurements. If your targets change, you'll get a fresh code to take to MealFrame™.
+          Use the code from the end of your plan — or from your last check-in. MacroMetric pre-fills your current numbers, so you only enter this period's measurements. If your targets change, you'll get a fresh code to take to MealFrame.
         </p>
 
         <div className="mt-5">
-          <label className="text-sm font-medium text-stone-700">Your MacroMetric™ code</label>
+          <label className="text-sm font-medium text-stone-700">Your MacroMetric code</label>
           <input
             type="text"
             value={code}
@@ -1832,7 +1832,7 @@ const CheckInCodeScreen = ({ onDecoded, onManual, onBack }) => {
           I don't have my code — enter manually
         </SecondaryButton>
         <p className="text-xs text-stone-500 text-center mt-3">
-          Manual check-ins still work — they just can't generate a MealFrame™ code.
+          Manual check-ins still work — they just can't generate a MealFrame code.
         </p>
       </div>
     </Card>
@@ -1967,7 +1967,7 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
 
         {isPrefilled && (
           <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 mt-3">
-            Pre-filled from your MacroMetric™ code — just add this period's numbers below (edit anything that's changed).
+            Pre-filled from your MacroMetric code — just add this period's numbers below (edit anything that's changed).
           </p>
         )}
 
@@ -2301,7 +2301,7 @@ const BulkingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
 
         {isPrefilled && (
           <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 mt-3">
-            Pre-filled from your MacroMetric™ code — just add this month's numbers below (edit anything that's changed).
+            Pre-filled from your MacroMetric code — just add this month's numbers below (edit anything that's changed).
           </p>
         )}
 
@@ -2572,8 +2572,8 @@ const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart
           <>
             <div className="border-t border-stone-200 my-6"></div>
             <div className="bg-stone-900 rounded-xl p-5 text-center">
-              <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your Updated MacroMetric™ Code</h4>
-              <p className="text-stone-400 text-xs mt-1">Your numbers changed — paste this into MealFrame™ to refresh your meal structure and examples. Keep it for your next check-in, too.</p>
+              <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your Updated MacroMetric Code</h4>
+              <p className="text-stone-400 text-xs mt-1">Your numbers changed — paste this into MealFrame to refresh your meal structure and examples. Keep it for your next check-in, too.</p>
               <div className="mt-3 bg-stone-800 border border-stone-700 rounded-lg px-3 py-3">
                 <code className="text-orange-300 text-xs break-all leading-relaxed">{updatedCode}</code>
               </div>
@@ -2588,11 +2588,11 @@ const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart
             <div className="text-center mt-6">
               <h3 className="text-xl font-bold text-stone-900">Refresh your meals</h3>
               <p className="text-stone-600 mt-2 text-sm leading-relaxed">
-                Your targets moved, so your meal structure should too. Continue to <strong>MealFrame™</strong> with your updated code.
+                Your targets moved, so your meal structure should too. Continue to <strong>MealFrame</strong> with your updated code.
               </p>
               <div className="space-y-2 mt-5">
                 <PrimaryButton onClick={goToMealFrame}>
-                  Continue to MealFrame™ <ArrowRight className="w-4 h-4" />
+                  Continue to MealFrame <ArrowRight className="w-4 h-4" />
                 </PrimaryButton>
               </div>
             </div>
@@ -2602,14 +2602,14 @@ const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart
         {/* Targets changed but the check-in was started manually — can't build a complete code */}
         {result.verdict === 'change' && !updatedCode && (
           <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-4 text-xs text-stone-500 text-center leading-relaxed">
-            Your targets changed. To get a MealFrame™ code automatically next time, start your check-in from your MacroMetric™ code instead of entering numbers by hand.
+            Your targets changed. To get a MealFrame code automatically next time, start your check-in from your MacroMetric code instead of entering numbers by hand.
           </div>
         )}
 
         {/* No change → existing MealFrame plan is still current */}
         {isNoChange && ingestedPlan && (
           <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-4 text-xs text-stone-500 text-center leading-relaxed">
-            Your numbers didn't change, so your current MealFrame™ structure is still on point — no refresh needed.
+            Your numbers didn't change, so your current MealFrame structure is still on point — no refresh needed.
           </div>
         )}
 
