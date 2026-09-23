@@ -867,7 +867,7 @@ const LandingScreen = ({ onStart, onCheckIn, onCustom }) => (
         </ul>
         <div className="mt-5">
           <PrimaryButton onClick={onStart}>
-            Set up my plan <ArrowRight className="w-4 h-4" />
+            Continue from PhysiquePlan <ArrowRight className="w-4 h-4" />
           </PrimaryButton>
         </div>
         <button
