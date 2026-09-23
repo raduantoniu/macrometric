@@ -834,7 +834,7 @@ const StepIndicator = ({ current, total }) => (
 // =====================================================
 
 const LandingScreen = ({ onStart, onCheckIn, onCustom }) => (
-  <Card className="max-w-3xl">
+  <Card className="!max-w-4xl">
     <div className="grid md:grid-cols-2 gap-10 items-center">
       <div>
         <span className="text-xs font-semibold text-orange-600 tracking-widest">MacroMetric</span>
