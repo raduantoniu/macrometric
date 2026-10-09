@@ -482,6 +482,28 @@ const ARCHETYPE_NAMES = [
   'Advanced & Lean',                   // 12
 ];
 
+// PhysiquePlan shows ONE name for the two sub-brackets either side of a tier
+// line, so the headline cannot flip on one kilogram. Mirrors its EDGE_NAMES and
+// baseArchetypeName exactly: [higher body fat, mid-range body fat, lean].
+const EDGE_NAMES = {
+  noviceIntermediate:     ['Some Muscle, Higher Body Fat',  'Some Muscle, Mid-Range Body Fat',  'Lean, Some Muscle'],
+  intermediateProficient: ['Solid Muscle, Higher Body Fat', 'Solid Muscle, Mid-Range Body Fat', 'Lean, Solid Muscle'],
+  proficientAdvanced:     ['Strong but Higher Body Fat',    'Strong, Mid-Range Body Fat',       'Lean & Muscular'],
+};
+
+function archetypeDisplayName(archetypeId, tier, subBracket) {
+  const base = ARCHETYPE_NAMES[archetypeId] || '';
+  if (!base || archetypeId === 0) return base;       // Out of Shape has no edge name
+  const column = (archetypeId - 1) % 3;              // 0 higher, 1 mid-range, 2 lean
+  const low = subBracket === 0;
+  const high = subBracket === 2;
+  let edge = null;
+  if ((tier === 'novice' && high) || (tier === 'intermediate' && low)) edge = EDGE_NAMES.noviceIntermediate;
+  else if ((tier === 'intermediate' && high) || (tier === 'proficient' && low)) edge = EDGE_NAMES.intermediateProficient;
+  else if ((tier === 'proficient' && high) || (tier === 'advanced' && low)) edge = EDGE_NAMES.proficientAdvanced;
+  return edge ? edge[column] : base;
+}
+
 const SUBBRACKET_WORD = { 0: 'Low', 1: '', 2: 'High' };
 
 function subBracketTierLabel(tier, subBracket) {
@@ -1525,7 +1547,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
       // clipboard may be unavailable; code is still visible to copy manually
     }
   };
-  const archetypeName = ARCHETYPE_NAMES[result.archetypeId] || '';
+  const archetypeName = archetypeDisplayName(result.archetypeId, result.tier, result.subBracket);
 
   // Calorie split for display
   const proteinKcal = result.protein * 4;
