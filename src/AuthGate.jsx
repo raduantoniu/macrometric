@@ -15,10 +15,13 @@ import { Loader2, ArrowRight } from 'lucide-react';
 //   root.render(<AuthGate><App /></AuthGate>);
 // =====================================================
 
-// CHANGE THIS PER APP: 'MacroMetric™' | 'MealFrame™' | 'OptiWorkout™'
-const APP_NAME = 'MacroMetric™';
+// CHANGE THIS PER APP: 'MacroMetric' | 'MealFrame' | 'OptiWorkout'
+const APP_NAME = 'MacroMetric';
 
 const LOGO_URL = '/logo.png';
+
+// Where non-members are sent to join (the ShredSmart Skool community).
+const JOIN_URL = 'https://www.skool.com/shredsmart';
 
 // ---- Chrome (mirrors the app's own Container/Header/Footer/Card) ----
 
@@ -41,7 +44,7 @@ const Shell = ({ appName, children }) => (
     <header className="w-full px-6 py-4 flex items-center justify-between border-b border-stone-200 bg-white">
       <div className="flex items-center gap-2.5">
         <Logo size={32} />
-        <span className="font-semibold text-stone-900 tracking-tight">ShredSmart™</span>
+        <span className="font-semibold text-stone-900 tracking-tight">ShredSmart</span>
       </div>
       <span className="text-xs text-stone-500 tracking-wider">{appName}</span>
     </header>
@@ -49,7 +52,7 @@ const Shell = ({ appName, children }) => (
     <main className="flex-1 flex items-center justify-center px-4 py-8">{children}</main>
 
     <footer className="w-full px-6 py-4 border-t border-stone-200 bg-white text-xs text-stone-500 flex justify-between">
-      <span>ShredSmart™</span>
+      <span>ShredSmart</span>
       <span>by Radu Antoniu</span>
     </footer>
   </div>
@@ -58,6 +61,23 @@ const Shell = ({ appName, children }) => (
 const Card = ({ children }) => (
   <div className="bg-white border border-stone-200 rounded-2xl shadow-sm p-8 max-w-xl w-full">
     {children}
+  </div>
+);
+
+// Shown to visitors who are not members (e.g. a friend who was sent the link).
+const JoinPrompt = ({ appName }) => (
+  <div className="mt-6 pt-5 border-t border-stone-200">
+    <p className="text-sm text-stone-700">
+      <span className="font-semibold text-stone-900">Not a member?</span> Join ShredSmart and unlock {appName}.
+    </p>
+    <a
+      href={JOIN_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mt-3 w-full bg-stone-50 hover:bg-stone-100 text-stone-900 font-medium py-3.5 px-6 rounded-full transition-colors text-sm border border-stone-200 flex items-center justify-center gap-2"
+    >
+      Join ShredSmart <ArrowRight className="w-4 h-4" />
+    </a>
   </div>
 );
 
@@ -157,6 +177,7 @@ export default function AuthGate({ children, appName = APP_NAME }) {
           >
             Use a different email
           </button>
+          <JoinPrompt appName={appName} />
         </Card>
       </Shell>
     );
@@ -167,7 +188,7 @@ export default function AuthGate({ children, appName = APP_NAME }) {
     <Shell appName={appName}>
       <Card>
         <span className="text-xs font-semibold text-orange-600 tracking-widest uppercase">
-          ShredSmart™ Members
+          ShredSmart Members
         </span>
         <h1 className="mt-2 text-3xl font-bold text-stone-900 tracking-tight">
           Sign in to {appName}
@@ -218,6 +239,7 @@ export default function AuthGate({ children, appName = APP_NAME }) {
             No password. The link works for 15 minutes and signs you in on this device.
           </p>
         </div>
+        <JoinPrompt appName={appName} />
       </Card>
     </Shell>
   );
