@@ -808,15 +808,15 @@ const formatWeight = (kg, units) => {
   return `${kg.toFixed(1)} kg`;
 };
 
-// Whole-unit bodyweight display (no decimals), mirroring PhysiquePlan's
-// formatWeight. Used for actual bodyweights (current weight, plan target) so a
-// shipped 69.9 reads "70 kg" — the same number PhysiquePlan shows. The decimal
-// formatWeight above stays for sub-kg RATE lines (e.g. "0.4 kg per week"), which
-// must NOT round to whole units. Duration math still uses the precise destWeight.
-const formatWeightWhole = (kg, units) => {
-  if (units === 'imperial') return `${Math.round(kgToLb(kg))} lb`;
-  return `${Math.round(kg)} kg`;
-};
+// Bodyweight display precision: the nearest 0.5 kg or the nearest whole pound.
+// Anything finer implies a precision a bodyweight target doesn't have.
+const roundBodyweight = (kg, units) => (units === 'imperial' ? Math.round(kgToLb(kg)) : Math.round(kg * 2) / 2);
+
+// Used for actual bodyweights (current weight, plan target) so a shipped 69.9
+// reads "70 kg", the same number PhysiquePlan shows. The decimal formatWeight
+// above stays for sub-kg RATE lines (e.g. "0.4 kg per week"), which must NOT
+// round this coarsely. Duration math still uses the precise destWeight.
+const formatWeightWhole = (kg, units) => `${roundBodyweight(kg, units)} ${units === 'imperial' ? 'lb' : 'kg'}`;
 
 const formatWeightRange = (kgLow, kgHigh, units) => {
   if (units === 'imperial') return `${Math.round(kgToLb(kgLow))}-${Math.round(kgToLb(kgHigh))} lb`;
@@ -1301,6 +1301,9 @@ const CustomPlanScreen = ({ units, onBuilt, onBack }) => {
   const [ratePct, setRatePct] = useState('');
   const [rateConcrete, setRateConcrete] = useState('');
   const [rateTouched, setRateTouched] = useState(false);
+  // The precise rate behind an edited field. The fields themselves show one
+  // decimal, which is too coarse to compute calories from.
+  const [rateOverride, setRateOverride] = useState(NaN);
 
   const [destInput, setDestInput] = useState('');
   const [destTouched, setDestTouched] = useState(false);
@@ -1319,7 +1322,9 @@ const CustomPlanScreen = ({ units, onBuilt, onBack }) => {
   const haveHW = Number.isFinite(heightCm) && Number.isFinite(weightKg) && heightCm > 0 && weightKg > 0;
   const heightDiff = haveHW ? heightCm - weightKg : NaN;
 
-  const dispW = (kg) => imperial ? Math.round(kgToLb(kg) * 100) / 100 : Math.round(kg * 100) / 100;
+  // Rates show one decimal; bodyweights show the nearest 0.5 kg or whole pound.
+  const dispRate = (kg) => (imperial ? kgToLb(kg) : kg).toFixed(1);
+  const dispDest = (kg) => roundBodyweight(kg, units);
   const toKg = (v) => imperial ? lbToKg(parseFloat(v)) : parseFloat(v);
 
   const recRate = direction === 'cut'
@@ -1335,27 +1340,29 @@ const CustomPlanScreen = ({ units, onBuilt, onBack }) => {
   useEffect(() => {
     if (rateTouched) return;
     if (recRate == null) { setRatePct(''); setRateConcrete(''); return; }
-    setRatePct((recRate * 100).toFixed(2));
-    setRateConcrete(Number.isFinite(weightKg) ? String(dispW(weightKg * recRate)) : '');
+    setRatePct((recRate * 100).toFixed(1));
+    setRateConcrete(Number.isFinite(weightKg) ? dispRate(weightKg * recRate) : '');
   }, [recRate, weightKg, rateTouched]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-fill the destination default while untouched.
   useEffect(() => {
     if (destTouched) return;
-    setDestInput(recDestKg != null ? String(dispW(recDestKg)) : '');
+    setDestInput(recDestKg != null ? String(dispDest(recDestKg)) : '');
   }, [recDestKg, destTouched]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onPct = (v) => {
     setRateTouched(true);
     setRatePct(v);
-    if (v !== '' && Number.isFinite(weightKg)) setRateConcrete(String(dispW(weightKg * parseFloat(v) / 100)));
+    setRateOverride(v !== '' ? parseFloat(v) / 100 : NaN);
+    if (v !== '' && Number.isFinite(weightKg)) setRateConcrete(dispRate(weightKg * parseFloat(v) / 100));
     else setRateConcrete('');
   };
   const onConcrete = (v) => {
     setRateTouched(true);
     setRateConcrete(v);
-    if (v !== '' && Number.isFinite(weightKg) && weightKg > 0) setRatePct((toKg(v) / weightKg * 100).toFixed(2));
-    else setRatePct('');
+    const frac = (v !== '' && Number.isFinite(weightKg) && weightKg > 0) ? toKg(v) / weightKg : NaN;
+    setRateOverride(frac);
+    setRatePct(Number.isFinite(frac) ? (frac * 100).toFixed(1) : '');
   };
   const changeDirection = (d) => {
     setDirection(d);
@@ -1363,20 +1370,21 @@ const CustomPlanScreen = ({ units, onBuilt, onBack }) => {
     setDestTouched(false);
   };
 
-  const rateFrac = ratePct !== '' ? parseFloat(ratePct) / 100 : NaN;
+  // Untouched fields stand for the precise recommended values, not their rounded display.
+  const rateFrac = rateTouched ? rateOverride : (recRate ?? NaN);
   const bounds = CUSTOM_RATE_BOUNDS[direction];
   const rateInRange = Number.isFinite(rateFrac) && rateFrac >= bounds.min && rateFrac <= bounds.max;
 
-  const destKg = destInput !== '' ? toKg(destInput) : null;
+  const destKg = !destTouched ? recDestKg : (destInput !== '' ? toKg(destInput) : null);
   const destValid = destKg == null
     ? true
     : (Number.isFinite(destKg) && destKg > 0 && (direction === 'cut' ? destKg < weightKg : destKg > weightKg));
 
   const canContinue = haveHW && rateInRange && destValid;
 
-  const recPctStr = recRate != null ? (recRate * 100).toFixed(2) : null;
-  const recConcreteStr = (recRate != null && Number.isFinite(weightKg)) ? dispW(weightKg * recRate) : null;
-  const recDestStr = recDestKg != null ? dispW(recDestKg) : null;
+  const recPctStr = recRate != null ? (recRate * 100).toFixed(1) : null;
+  const recConcreteStr = (recRate != null && Number.isFinite(weightKg)) ? dispRate(weightKg * recRate) : null;
+  const recDestStr = recDestKg != null ? dispDest(recDestKg) : null;
 
   const mutedInput = 'text-stone-400';
   const liveInput = 'text-stone-900';
@@ -2261,7 +2269,7 @@ const INTAKE_OFF_TARGET_KCAL = 100;
 
 function processCuttingCheckIn(input, units = 'metric') {
   const wUnit = units === 'imperial' ? 'lb' : 'kg';
-  const fmt = (kg) => units === 'imperial' ? kgToLb(kg).toFixed(2) : kg.toFixed(2);
+  const fmt = (kg) => units === 'imperial' ? kgToLb(kg).toFixed(1) : kg.toFixed(1);
 
   // Step 1: Accuracy gate
   if (input.tracked === false) {
@@ -2944,7 +2952,7 @@ export default function App() {
         currentTarget: String(mm1.target),
         proteinTarget: String(mm1.protein),
         height: mm1.units === 'imperial' ? String(Math.round(mm1.height / 2.54)) : String(mm1.height),
-        targetRate: toDispW(weeklyLossKg, 2),
+        targetRate: toDispW(weeklyLossKg),
       });
       setScreen('checkin_cut');
     } else {
