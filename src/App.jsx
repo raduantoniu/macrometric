@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { ArrowRight, ArrowLeft, Check, Loader2, ChevronDown, ChevronUp, ExternalLink, AlertTriangle, Copy } from 'lucide-react';
 
 // =====================================================
@@ -13,13 +13,6 @@ const MEALFRAME_URL = 'https://mealframe.raduantoniu.com';
 // UNIT CONVERSION HELPERS
 // =====================================================
 
-const cmToFtIn = (cm) => {
-  const totalInches = cm / 2.54;
-  const ft = Math.floor(totalInches / 12);
-  const inches = Math.round(totalInches - ft * 12);
-  return { ft, inches };
-};
-
 const ftInToCm = (ft, inches) => (parseFloat(ft) * 12 + parseFloat(inches)) * 2.54;
 const kgToLb = (kg) => kg * 2.20462;
 const lbToKg = (lb) => lb / 2.20462;
@@ -28,22 +21,53 @@ const lbToKg = (lb) => lb / 2.20462;
 // ROUNDING HELPERS
 // =====================================================
 
-const roundUpTo50 = (x) => Math.ceil(x / 50) * 50;
+const roundTo50 = (x) => Math.round(x / 50) * 50;
 const roundToNearest5 = (x) => Math.round(x / 5) * 5;
 
 // =====================================================
 // PLAN DURATION
 // The block destination AND the recommended rate of change are SHIPPED in the
-// SS1 code (fields 13 & 14). MacroMetric no longer owns a rate model — it reads
-// the rate off the code and derives the same duration PhysiquePlan displays:
+// SS1 code (fields 13 & 14). MacroMetric reads the rate off the code and derives
+// the same duration PhysiquePlan displays:
 //   cut  → rate is fractional bodyweight / WEEK
 //   bulk → rate is fractional bodyweight / MONTH
 // Mirror of PhysiquePlan's formatDuration / duration math so the two agree.
 // =====================================================
 
-function planDurationWeeks({ direction, weight, destWeight, rate }) {
+// How long a cut from `startKg` to `targetKg` takes, in weeks. MIRRORS
+// PhysiquePlan's cutDurationWeeks: the cut rate depends on heightDiff, which
+// rises as he loses weight, so a long cut slows down on the way. This walks the
+// cut week by week at the (cap-limited) rate that applies at each week's weight.
+function cutDurationWeeks(heightCm, startKg, targetKg, tier, subBracket) {
+  let weight = startKg;
+  let weeks = 0;
+  while (weight > targetKg && weeks < 520) {
+    const loss = weight * cappedCutRate(weight, heightCm, customCutRate(tier, subBracket, heightCm - weight));
+    if (!(loss > 0)) return 0;
+    if (weight - loss <= targetKg) return weeks + (weight - targetKg) / loss;
+    weight -= loss;
+    weeks += 1;
+  }
+  return weeks;
+}
+
+// True when a shipped cut rate is the rate model's own (capped or not), i.e. not
+// a coach's override in the custom-plan flow — only then can the cut be walked.
+function followsCutRateModel({ height, weight, tier, subBracket, shippedRate }) {
+  if (!(height > 0) || !tier) return false;
+  const base = customCutRate(tier, subBracket, height - weight);
+  const near = (a, b) => Math.abs(a - b) < 6e-5;
+  return near(shippedRate, base) || near(shippedRate, cappedCutRate(weight, height, base));
+}
+
+// `model` ({ height, tier, subBracket, shippedRate }) is optional; without it, or
+// for an overridden rate, a cut is the simple total / weekly-loss division.
+function planDurationWeeks({ direction, weight, destWeight, rate, model }) {
   if (!rate || rate <= 0) return 0;
   if (direction === 'cut') {
+    if (model && followsCutRateModel({ ...model, weight })) {
+      return cutDurationWeeks(model.height, weight, destWeight, model.tier, model.subBracket);
+    }
     const weeklyLoss = weight * rate;
     return Math.max(0, (weight - destWeight) / weeklyLoss);
   }
@@ -67,7 +91,28 @@ function formatDuration(weeks) {
 // =====================================================
 
 // --- MAINTENANCE: muscle-mass adjustment -------------------------------------
-const TIER_MAINTENANCE_ADJ = { novice: 0, intermediate: 40, proficient: 80, advanced: 120 }; // kcal/day
+// Mifflin-St Jeor works from total bodyweight, so at the same height and weight
+// it gives a muscular lifter the same resting metabolism as an untrained man.
+// The bonus covers the difference. Assumptions (estimates, not measurements):
+// each strength slot above mid-novice carries ~1.3% of bodyweight more lean mass
+// in place of fat (~12% by mid-advanced), and a kg of that swap is worth
+// ~15 kcal/day at rest (between muscle tissue alone, ~8.5 net of the fat it
+// replaces, and whole-body lean-mass equations, ~17-22).
+//   -> 0.2 kcal per kg bodyweight per slot: 80 kg mid tiers = 0 / 48 / 96 / 144.
+// Scaling with bodyweight gives heavier lifters more, and stepping by sub-bracket
+// means no jump at a tier line.
+const MUSCLE_KCAL_PER_KG_PER_SLOT = 0.2;
+
+function muscleMaintenanceAdj(tier, subBracket, weightKg) {
+  const slot = Math.max(0, TIER_NAME.indexOf(tier)) * 3 + (subBracket ?? 1); // 0 = low novice ... 11 = high advanced
+  return MUSCLE_KCAL_PER_KG_PER_SLOT * Math.max(0, slot - 1) * weightKg;
+}
+
+// ACTIVITY TERMS — all scale with bodyweight. Benchmarked against the 2023 DRI
+// energy equations for men (National Academies, doubly-labelled water): total
+// maintenance sits ~50-250 kcal BELOW that reference across 65-120 kg. That
+// margin is deliberate — clients' logged intake runs below true intake, and the
+// target is eaten in logged calories.
 
 // Per-step NET cost above resting, scaled to bodyweight.
 // Source: Weyand et al. 2010, "The mass-specific energy cost of human walking
@@ -87,17 +132,19 @@ function calcStepsKcal(weightKg, steps) {
   return (STEP_J_PER_KG_PER_STRIDE * weightKg * steps) / (J_PER_KCAL * STEPS_PER_STRIDE);
 }
 
-const WORKOUT_KCAL = 200; // per resistance-training session
+const WORKOUT_KCAL_PER_KG = 3; // per resistance-training session (80 kg -> 240)
 
 // Per minute of NON-STEP cardio only (cycling, swimming, rowing, elliptical, yoga).
-const CARDIO_KCAL_PER_MIN = 7;
+const CARDIO_KCAL_PER_KG_PER_MIN = 0.09; // 80 kg -> ~7 kcal/min
+
+// Daily job cost on top of what the step count already captures (80 kg -> 0/100/200).
+const JOB_KCAL_PER_KG = { desk: 0, feet: 1.25, physical: 2.5 };
 
 // --- CUTTING: deficit ceiling ------------------------------------------------
 // The cut RATE comes from the code. This is the kcal/day deficit CAP — a pure
 // calorie-side safety bound (keeps the cut sane/hormonal for heavier clients).
-// It rarely binds for the intermediate clientele; when it does, the calories
-// trail the shipped rate slightly while the DISPLAYED duration still uses the
-// shipped rate (so PhysiquePlan and MacroMetric print the same number).
+// When it binds, the DISPLAYED pace and duration use the pace the capped
+// deficit actually delivers, not the shipped rate.
 const CUT_DEFICIT_CAP_BY_HEIGHTDIFF = [
   { maxDiff: 70,       cap: 800 },
   { maxDiff: 80,       cap: 700 },
@@ -105,6 +152,7 @@ const CUT_DEFICIT_CAP_BY_HEIGHTDIFF = [
   { maxDiff: 100,      cap: 600 },
   { maxDiff: Infinity, cap: 500 },
 ];
+const KCAL_PER_KG_LOST = 7700;
 
 function getCutDeficitCap(heightDiff) {
   const band = CUT_DEFICIT_CAP_BY_HEIGHTDIFF.find((b) => heightDiff <= b.maxDiff)
@@ -112,11 +160,33 @@ function getCutDeficitCap(heightDiff) {
   return band.cap;
 }
 
-// --- BULKING: surplus (calorie knob — NOT the gain rate) ---------------------
-// The gain RATE comes from the code. The surplus % below is a separate calorie
-// decision (how big a surplus to run), so it stays here.
-const BULK_SURPLUS_PCT = { novice: 0.15, intermediate: 0.11, proficient: 0.08, advanced: 0.06 };
-const BULK_SURPLUS_SUBBRACKET_MULT = [1.10, 1.00, 0.90]; // [low, mid, high]
+// Lowest cut target (kcal/day): the resting metabolism of a lean man of this
+// height (Mifflin-St Jeor at height − 105 kg, age 35), never below 1500. Scales
+// with height so short lifters can go as low as they genuinely need to.
+const CUT_FLOOR_MIN = 1500;
+
+function cutCalorieFloor(heightCm) {
+  const leanBmr = 10 * (heightCm - 105) + 6.25 * heightCm - 5 * 35 + 5;
+  return Math.max(CUT_FLOOR_MIN, roundTo50(leanBmr));
+}
+
+// Fractional bw / WEEK that a given daily deficit delivers.
+function cutRateFromDeficit(dailyDeficit, weight) {
+  return (Math.max(0, dailyDeficit) * 7) / KCAL_PER_KG_LOST / weight;
+}
+
+// Shipped cut rate, limited to what the deficit cap allows.
+function cappedCutRate(weight, height, rate) {
+  return Math.min(rate, cutRateFromDeficit(getCutDeficitCap(height - weight), weight));
+}
+
+// --- BULKING: surplus --------------------------------------------------------
+// The gain RATE comes from the code; the surplus is the energy that rate costs.
+// Bulk weight is a mix of muscle and fat, so a kg gained costs less than the
+// 7700 kcal of pure fat. 5000 kcal/kg is a working estimate for that mix.
+const BULK_KCAL_PER_KG_GAINED = 5000;
+const DAYS_PER_MONTH = (52 / 12) * 7;
+const BULK_SURPLUS_FLOOR = 100; // kcal/day — anything smaller is lost in tracking noise
 const BULK_SURPLUS_CAP = 500; // kcal/day
 
 // --- PROTEIN ----------------------------------------------------------------
@@ -353,6 +423,8 @@ function genDateAgeWeeks(genDate) {
 //   12 maintenance  int kcal      (computed here from age/activity)
 //   13 genDate      YYYYMMDD      (staleness)
 //   14 rate         fractional bodyweight change (cut /wk, bulk /mo) — from SS1
+//                   (a cut rate is lowered to the true pace when the deficit
+//                   cap or calorie floor binds)
 // Wrapped: MM1-<base64url(payload)>-<checksum>
 //
 // MealFrame ignores field 14 (its decoder gates on length, append-only), so this
@@ -522,14 +594,14 @@ function subBracketTierLabel(tier, subBracket) {
 // Mifflin-St Jeor (male) + factorial components × 1.10 TEF, + tier muscle adj.
 // =====================================================
 
-function calculateMaintenance({ weight, height, age, workouts, cardio, steps, job, tier }) {
+function calculateMaintenance({ weight, height, age, workouts, cardio, steps, job, tier, subBracket }) {
   const bmr = 10 * weight + 6.25 * height - 5 * age + 5;
   const neat = bmr * 0.20;
-  const workoutsKcal = (workouts * WORKOUT_KCAL) / 7;
-  const cardioKcal = (cardio * CARDIO_KCAL_PER_MIN) / 7;
+  const workoutsKcal = (workouts * WORKOUT_KCAL_PER_KG * weight) / 7;
+  const cardioKcal = (cardio * CARDIO_KCAL_PER_KG_PER_MIN * weight) / 7;
   const stepsKcal = calcStepsKcal(weight, steps);
-  const jobKcal = { desk: 0, feet: 100, physical: 200 }[job];
-  const muscleAdj = TIER_MAINTENANCE_ADJ[tier] ?? 0;
+  const jobKcal = (JOB_KCAL_PER_KG[job] ?? 0) * weight;
+  const muscleAdj = muscleMaintenanceAdj(tier, subBracket, weight);
   const subtotal = bmr + neat + workoutsKcal + cardioKcal + stepsKcal + jobKcal + muscleAdj;
   const tdee = subtotal * 1.10;
   return { bmr, neat, workoutsKcal, cardioKcal, stepsKcal, jobKcal, muscleAdj, subtotal, tdee };
@@ -537,30 +609,32 @@ function calculateMaintenance({ weight, height, age, workouts, cardio, steps, jo
 
 // =====================================================
 // DEFICIT CALCULATION (cutting)
-// Rate comes from the SS1 code (fractional bw/week). The deficit ceiling is a
-// MacroMetric-side calorie safety bound keyed by heightDiff.
+// Rate comes from the SS1 code (fractional bw/week). The deficit ceiling and
+// the calorie floor are MacroMetric-side safety bounds; when either binds, the
+// returned rate is the pace the applied deficit actually delivers.
 // =====================================================
 
 function calculateCuttingTarget({ maintenance, weight, height, rate }) {
-  const heightDiff = height - weight;
-  const cap = getCutDeficitCap(heightDiff);
-  const rateBasedDeficit = (weight * rate * 7700) / 7;
-  const dailyDeficit = Math.min(rateBasedDeficit, cap);
-  let target = roundUpTo50(maintenance - dailyDeficit);
+  const cap = getCutDeficitCap(height - weight);
+  const rateBasedDeficit = (weight * rate * KCAL_PER_KG_LOST) / 7;
+  let dailyDeficit = Math.min(rateBasedDeficit, cap);
+  let target = roundTo50(maintenance - dailyDeficit);
 
   // Minimum target floor (sanity + hormones)
-  const floor = height > 175 ? 2000 : 1800;
+  const floor = cutCalorieFloor(height);
   let floorApplied = false;
   if (target < floor) {
     target = floor;
     floorApplied = true;
+    dailyDeficit = Math.max(0, maintenance - floor);
   }
 
-  const targetWeeklyLoss = weight * rate;
+  const weeklyRate = dailyDeficit < rateBasedDeficit ? cutRateFromDeficit(dailyDeficit, weight) : rate;
+  const targetWeeklyLoss = weight * weeklyRate;
 
   return {
     target,
-    weeklyRate: rate,
+    weeklyRate,
     cap,
     rateBasedDeficit,
     appliedDeficit: dailyDeficit,
@@ -572,23 +646,21 @@ function calculateCuttingTarget({ maintenance, weight, height, rate }) {
 
 // =====================================================
 // SURPLUS CALCULATION (bulking)
-// Surplus % is a MacroMetric calorie knob (tier × sub-bracket). The target gain
-// RATE comes from the SS1 code (fractional bw/month).
+// The target gain RATE comes from the SS1 code (fractional bw/month); the
+// surplus is what that rate costs at BULK_KCAL_PER_KG_GAINED.
 // =====================================================
 
-function calculateBulkingTarget({ maintenance, weight, tier, subBracket, rate }) {
-  const basePct = BULK_SURPLUS_PCT[tier] ?? 0.08;
-  const pct = basePct * (BULK_SURPLUS_SUBBRACKET_MULT[subBracket] ?? 1);
-  const rawSurplus = maintenance * pct;
-  const surplus = Math.min(rawSurplus, BULK_SURPLUS_CAP);
-  const target = roundUpTo50(maintenance + surplus);
-
+function calculateBulkingTarget({ maintenance, weight, rate }) {
   // Target gain rate comes straight from the shipped rate (fractional bw/month).
   const targetMonthlyGain = weight * rate;
 
+  const rateBasedSurplus = (targetMonthlyGain * BULK_KCAL_PER_KG_GAINED) / DAYS_PER_MONTH;
+  const surplus = Math.min(Math.max(rateBasedSurplus, BULK_SURPLUS_FLOOR), BULK_SURPLUS_CAP);
+  const target = roundTo50(maintenance + surplus);
+
   return {
     target,
-    surplusPct: pct,
+    rateBasedSurplus,
     appliedSurplus: surplus,
     targetMonthlyGain,
     gainRatePct: rate * 100,
@@ -634,7 +706,8 @@ function calculateFiber(calories) {
 
 function buildPrescription(data) {
   const maint = calculateMaintenance({ ...data });
-  const { direction, tier, subBracket, rate, destWeight } = data;
+  const { direction, tier, subBracket, destWeight } = data;
+  let { rate } = data;
 
   let calorieResult;
   if (direction === 'cut') {
@@ -644,12 +717,13 @@ function buildPrescription(data) {
       height: data.height,
       rate,
     });
+    // True pace from here on: duration, the rate shown, and the rate shipped in
+    // the MM1 code (so check-ins compare against what the calories deliver).
+    rate = calorieResult.weeklyRate;
   } else {
     calorieResult = calculateBulkingTarget({
       maintenance: maint.tdee,
       weight: data.weight,
-      tier,
-      subBracket,
       rate,
     });
   }
@@ -664,6 +738,8 @@ function buildPrescription(data) {
     weight: data.weight,
     destWeight,
     rate,
+    // The calorie floor is not part of the rate model, so a floored cut is not walked.
+    model: calorieResult.floorApplied ? null : { height: data.height, tier, subBracket, shippedRate: data.rate },
   });
 
   return {
@@ -687,7 +763,6 @@ function buildPrescription(data) {
     weeklyRate: calorieResult.weeklyRate,
     targetWeeklyLoss: calorieResult.targetWeeklyLoss,
     targetMonthlyGain: calorieResult.targetMonthlyGain,
-    surplusPct: calorieResult.surplusPct,
     floorApplied: calorieResult.floorApplied,
   };
 }
@@ -884,7 +959,7 @@ const LandingScreen = ({ onStart, onCheckIn, onCustom }) => (
           </li>
           <li className="flex gap-2">
             <Check className="w-4 h-4 text-orange-500 flex-shrink-0 mt-0.5" />
-            <span>Confidence in your numbers — no more guessing</span>
+            <span>Confidence in your numbers, no more guessing</span>
           </li>
         </ul>
         <div className="mt-5">
@@ -914,7 +989,7 @@ const LandingScreen = ({ onStart, onCheckIn, onCustom }) => (
 
 const CODE_ERROR_COPY = {
   version: "This code is from a newer version of PhysiquePlan. Re-run PhysiquePlan to get a compatible code.",
-  checksum: "That code doesn't look right — a character may be off. Copy it again from your PhysiquePlan blueprint, or use the “Continue to MacroMetric” button there to skip typing.",
+  checksum: "That code doesn't look right. A character may be off. Copy it again from your PhysiquePlan blueprint, or use the “Continue to MacroMetric” button there to skip typing.",
   corrupt: "That code couldn't be read. Copy it again from your PhysiquePlan blueprint, or use the “Continue to MacroMetric” button there.",
   format: "That doesn't look like a ShredSmart code. It should start with “SS1-”. Copy it again from your PhysiquePlan blueprint.",
   fields: "That code is incomplete or from an older version of PhysiquePlan. Re-run PhysiquePlan to get a current code.",
@@ -925,7 +1000,7 @@ const CODE_ERROR_COPY = {
 const MM_CODE_ERROR_COPY = {
   version: "This code is from a newer version of MacroMetric. Re-run your MacroMetric plan to get a compatible code.",
   wrongcode: "That looks like a PhysiquePlan code (SS1), not a MacroMetric code. Paste the MacroMetric code from the end of your plan or your last check-in.",
-  checksum: "That code doesn't look right — a character may be off. Copy it again from MacroMetric (end of your plan, or your last check-in result).",
+  checksum: "That code doesn't look right. A character may be off. Copy it again from MacroMetric (end of your plan, or your last check-in result).",
   corrupt: "That code couldn't be read. Copy it again from MacroMetric.",
   format: "That doesn't look like a MacroMetric code. It should start with “MM1-”.",
   fields: "That code is incomplete or from an older version of MacroMetric. Re-run your MacroMetric plan to get a current code.",
@@ -954,7 +1029,7 @@ const CodeScreen = ({ initialCode = '', initialError = null, onDecoded, onBack }
         <span className="text-xs font-semibold text-stone-400 tracking-widest uppercase">Bring your plan over</span>
         <h2 className="mt-2 text-2xl font-bold text-stone-900">Paste your PhysiquePlan code</h2>
         <p className="text-stone-600 mt-2 text-sm">
-          PhysiquePlan generated a code at the bottom of your blueprint. Paste it here and MacroMetric pre-fills everything — your stats, your strength tier, your direction. No re-entering anything.
+          PhysiquePlan generated a code at the bottom of your blueprint. Paste it here and MacroMetric pre-fills everything: your stats, your strength tier, your direction. No re-entering anything.
         </p>
 
         <div className="mt-5">
@@ -995,7 +1070,7 @@ const StalenessNotice = ({ weeks, onRerun }) => (
   <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 flex gap-3">
     <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
     <div className="text-sm text-stone-700">
-      <span className="font-medium text-stone-900">These numbers are a few months old.</span> Your plan was generated about {Math.round(weeks / 4)} months ago — your body has likely moved on. You can proceed, but a fresh PhysiquePlan read will be more accurate.
+      <span className="font-medium text-stone-900">These numbers are a few months old.</span> Your plan was generated about {Math.round(weeks / 4)} months ago, and your body has likely moved on. You can proceed, but a fresh PhysiquePlan read will be more accurate.
       <button onClick={onRerun} className="mt-2 text-amber-700 font-medium underline underline-offset-2 hover:text-amber-800">
         Re-run PhysiquePlan
       </button>
@@ -1013,7 +1088,8 @@ const IntroScreen = ({ decoded, units, onContinue, onBack, onRerun }) => {
     direction: decoded.direction,
     weight: decoded.weight,
     destWeight: decoded.destWeight,
-    rate: decoded.rate,
+    rate: decoded.direction === 'cut' ? cappedCutRate(decoded.weight, decoded.height, decoded.rate) : decoded.rate,
+    model: { height: decoded.height, tier: decoded.tier, subBracket: decoded.subBracket, shippedRate: decoded.rate },
   })));
 
   return (
@@ -1023,7 +1099,7 @@ const IntroScreen = ({ decoded, units, onContinue, onBack, onRerun }) => {
         <span className="text-xs font-semibold text-orange-600 tracking-widest uppercase">Plan loaded</span>
         <h2 className="mt-2 text-3xl font-bold text-stone-900">Got it — let's set your targets.</h2>
         <p className="text-stone-600 mt-3 leading-relaxed text-sm">
-          This takes about 3 minutes. We just need your age and activity — everything else came over in your code.
+          This takes about 3 minutes. We just need your age and activity. Everything else came over in your code.
         </p>
       </div>
 
@@ -1146,7 +1222,7 @@ const DetailsScreen = ({ onContinue, currentStep, totalSteps, onBack }) => {
             placeholder="e.g. 8000"
             className="mt-1 w-full px-4 py-3 rounded-lg border border-stone-200 bg-white focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500"
           />
-          <p className="text-xs text-stone-500 mt-1">From your phone or watch — your honest average. This already covers all your walking, running, and hiking.</p>
+          <p className="text-xs text-stone-500 mt-1">From your phone or watch. Use your honest average. This already covers all your walking, running, and hiking.</p>
         </div>
         <div>
           <label className="text-sm font-medium text-stone-700">Cardio that doesn't add steps (minutes/week)</label>
@@ -1160,7 +1236,7 @@ const DetailsScreen = ({ onContinue, currentStep, totalSteps, onBack }) => {
           <p className="text-xs text-stone-500 mt-1">
             <strong>Only</strong> activities that don't show up in your step count: cycling, swimming, rowing, elliptical, yoga.
             <br />
-            <span className="text-stone-400">Don't include running, jogging, walking, or treadmill — those are already in your steps above. Enter 0 if none.</span>
+            <span className="text-stone-400">Don't include running, jogging, walking, or treadmill. Those are already in your steps above. Enter 0 if none.</span>
           </p>
         </div>
         <div>
@@ -1247,7 +1323,7 @@ const CustomPlanScreen = ({ units, onBuilt, onBack }) => {
   const toKg = (v) => imperial ? lbToKg(parseFloat(v)) : parseFloat(v);
 
   const recRate = direction === 'cut'
-    ? (haveHW ? customCutRate(tier, subBracket, heightDiff) : null)
+    ? (haveHW ? cappedCutRate(weightKg, heightCm, customCutRate(tier, subBracket, heightDiff)) : null)
     : customBulkRate(tier, subBracket);
   const recDestKg = !haveHW ? null : (direction === 'cut'
     ? customCutDestination(tier, subBracket, heightCm, weightKg)
@@ -1562,7 +1638,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
   // drives the macros and is what the client eats). Maintenance is shown
   // rounded, and the surplus/deficit is derived from the two numbers actually
   // on screen, so target = maintenance +/- delta holds exactly after rounding.
-  const maintenanceDisplay = roundUpTo50(result.maintenance);
+  const maintenanceDisplay = roundTo50(result.maintenance);
   const deltaDisplay = Math.abs(maintenanceDisplay - result.target);
 
   return (
@@ -1596,6 +1672,10 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
               </div>
             </div>
           </div>
+
+          <p className="mt-4 pt-4 border-t border-orange-200 text-sm text-stone-600 leading-relaxed">
+            This target is built for your body, your training and your daily activity, and it's the best number we can give you right now. No first estimate can be perfectly accurate, so your true target may be within a couple hundred calories above or below this. This is where we start: eat it every day for {isCut ? 'two weeks' : 'a month'}, and your check-in will adjust it based on how your body responds.
+          </p>
         </div>
 
         {/* Macros */}
@@ -1637,7 +1717,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
             <div className="bg-white border border-stone-200 rounded-xl p-4 flex items-center justify-between">
               <div>
                 <div className="font-semibold text-stone-900">Fiber</div>
-                <div className="text-xs text-stone-500">Minimum — aim for at least this</div>
+                <div className="text-xs text-stone-500">Minimum. Aim for at least this</div>
               </div>
               <div className="text-right">
                 <div className="text-2xl font-bold text-stone-900">{result.fiber}g</div>
@@ -1656,7 +1736,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
                 {formatWeight(result.targetWeeklyLoss, units)} per week
               </div>
               <p className="text-sm text-stone-600 mt-2">
-                That's {(result.weeklyRate * 100).toFixed(1)}% of your bodyweight weekly. Write this number down — you'll need it for your weekly check-ins.
+                That's {(result.weeklyRate * 100).toFixed(1)}% of your bodyweight weekly. Write this number down. You'll need it for your weekly check-ins.
               </p>
             </>
           ) : (
@@ -1665,7 +1745,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
                 +{formatWeight(result.targetMonthlyGain, units)} per month
               </div>
               <p className="text-sm text-stone-600 mt-2">
-                Slow lean bulks build muscle while staying lean. Write this number down — you'll need it for your monthly check-ins.
+                Slow lean bulks build muscle while staying lean. Write this number down. You'll need it for your monthly check-ins.
               </p>
             </>
           )}
@@ -1689,7 +1769,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
             <div className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Your plan target weight</div>
             <div className="text-2xl font-bold text-stone-900 mt-1">{formatWeightWhole(result.destWeight, units)} <span className="text-base font-normal text-stone-500">in ~{planWeeks} weeks</span></div>
             <p className="text-sm text-stone-600 mt-2">
-              This is where this plan takes you — your job for the next {durationLabel}. You're ultimately heading for your next physique milestone which is to be lean at a body weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan), but for now, aim here.
+              This is where this plan takes you, and it's your job for the next {durationLabel}. You're ultimately heading for your next physique milestone which is to be lean at a body weight of <strong>{formatWeightRange(result.goalLow, result.goalHigh, units)}</strong> (your north star from PhysiquePlan), but for now, aim here.
             </p>
           </div>
         )}
@@ -1698,7 +1778,7 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
         <div className="mt-4 bg-orange-50 border border-orange-200 rounded-xl p-5">
           <h3 className="font-semibold text-stone-900 text-sm">Remember the system:</h3>
           <p className="text-sm text-stone-700 mt-2 leading-relaxed">
-            Hit your calories and protein every day. Fat and carbs can fluctuate — just keep them above the floors. That's it.
+            Hit your calories and protein every day. Fat and carbs can fluctuate. Just keep them above the floors. That's it.
           </p>
           <p className="text-sm text-stone-700 mt-2 leading-relaxed">
             As your body weight changes, return to MacroMetric to adjust your targets (weekly check-in when cutting / monthly check-in when bulking).
@@ -1715,49 +1795,49 @@ const ResultsScreen = ({ result, units, onRestart, onBack, custom = false }) => 
               <p className="mt-2"><strong>If protein is above 90% of target:</strong> hold the full deficit. Lower protein days once in a while aren't a big deal.</p>
             </QAItem>
             <QAItem question="Can I have higher-calorie and lower-calorie days?">
-              <p>It's better to keep your daily calorie intake constant — even on training days vs rest days. The benefit of getting used to a steady diet structure (better hunger signals, ingrained habits, predictability) outweighs any small benefits of cycling.</p>
+              <p>It's better to keep your daily calorie intake constant, even on training days vs rest days. The benefit of getting used to a steady diet structure (better hunger signals, ingrained habits, predictability) outweighs any small benefits of cycling.</p>
               <p className="mt-2">Eat the same every day. It's easier and it works better.</p>
             </QAItem>
             {isCut ? (
               <QAItem question="What if I want to cut faster?">
                 <p>Don't. Deficits larger than what you're prescribed lead to muscle loss, can't be maintained long-term, and don't help you build the habits that keep you lean afterward.</p>
-                <p className="mt-2">The time you save with an aggressive cut gets repaid with interest later — through rebuilding muscle, binges, or yo-yo dieting. Stick to the program.</p>
+                <p className="mt-2">The time you save with an aggressive cut gets repaid with interest later, through rebuilding muscle, binges, or yo-yo dieting. Stick to the program.</p>
               </QAItem>
             ) : (
               <QAItem question="What if I want to bulk faster?">
-                <p>Don't. A bigger surplus doesn't build muscle faster — muscle growth has a speed limit set by your training and recovery, not by how much you eat. Past that limit, every extra calorie just becomes fat.</p>
+                <p>Don't. A bigger surplus doesn't build muscle faster. Muscle growth has a speed limit set by your training and recovery, not by how much you eat. Past that limit, every extra calorie just becomes fat.</p>
                 <p className="mt-2">That fat is fat you'll have to cut off later, which costs you time and muscle. A slow, lean bulk gets you to the goal physique faster than a fast, sloppy one. Stick to the program.</p>
               </QAItem>
             )}
             <QAItem question="Why isn't my protein higher?">
-              <p>MacroMetric sets protein based on your actual muscle development and lean mass — your true needs. Most calculators set protein based on bodyweight, which severely overestimates the requirements of anyone carrying a moderate amount of body fat.</p>
+              <p>MacroMetric sets protein based on your actual muscle development and lean mass, which is your true need. Most calculators set protein based on bodyweight, which severely overestimates the requirements of anyone carrying a moderate amount of body fat.</p>
               <p className="mt-2">ShredSmart sets protein squarely in the optimal range, but intentionally on the medium-to-lower end. Going higher would mean less fat and carbs, which hurts hormonal balance, sleep, training, and meal variety.</p>
               <p className="mt-2">You can go a bit above your prescribed number if your diet preferences favor it, but don't go significantly higher when cutting. Trust the number! It is set this way deliberately, and it's good for you.</p>
             </QAItem>
             <QAItem question="Should I eat back the calories I burn through exercise?">
               <p>Only if the activity isn't already captured in your maintenance calculation.</p>
-              <p className="mt-2"><strong>Don't eat them back</strong> for your normal workouts and cardio. Those are already built into your maintenance number — you told MacroMetric about them when you set up your plan. Eating them back would double-count.</p>
+              <p className="mt-2"><strong>Don't eat them back</strong> for your normal workouts and cardio. Those are already built into your maintenance number, because you told MacroMetric about them when you set up your plan. Eating them back would double-count.</p>
               <p className="mt-2"><strong>Do eat them back</strong> for non-routine activity. If you go on a long hike and burn an extra 1000 kcal, eat those 1000 kcal more that day. Same goes for an extra workout, an extra cardio session, or a full day of physical work you don't normally do.</p>
             </QAItem>
             <QAItem question="If I overeat one day, should I eat less the next day to make up for it?">
               <p>No. Return to your normal target as if nothing happened.</p>
-              <p className="mt-2">Cutting calories the day after an overeat seems logical but creates two problems. First, it makes the plan feel harder — you've turned one bad day into two punishing days. Second, and more importantly, once you allow yourself to "borrow from tomorrow," you'll overeat more often today. Research is clear on this: people who believe they can compensate later are dramatically more likely to indulge now.</p>
+              <p className="mt-2">Cutting calories the day after an overeat seems logical but creates two problems. First, it makes the plan feel harder: you've turned one bad day into two punishing days. Second, and more importantly, once you allow yourself to "borrow from tomorrow," you'll overeat more often today. Research is clear on this: people who believe they can compensate later are dramatically more likely to indulge now.</p>
               <p className="mt-2">Let the mistake be a mistake. Feel the sting of it. Then return to the normal plan tomorrow. Maintaining a constant daily target is what builds the habits, satiety signals, and consistency that actually keep you lean long-term.</p>
             </QAItem>
             <QAItem question="What if I don't hit my macros to the gram?">
-              <p>You don't need to. Hitting calories and protein within a few grams of target produces results indistinguishable from hitting each macro perfectly — as long as fat and carbs stay above their floors.</p>
+              <p>You don't need to. Hitting calories and protein within a few grams of target produces results indistinguishable from hitting each macro perfectly, as long as fat and carbs stay above their floors.</p>
               <p className="mt-2">Fat at 25% of calories one day and 40% the next is totally fine. Don't make this harder than it needs to be.</p>
             </QAItem>
             <QAItem question="Why is fiber on here, and how much do I need?">
-              <p>Fiber isn't a macronutrient, but it's one of the most useful things you can prioritize on a cut — which is why it's on your numbers. Aim for at least <strong>14g per 1,000 calories</strong> you eat. Treat it as a floor, not a ceiling.</p>
-              <p className="mt-2">High-fiber foods make a deficit far easier to live with. They require more chewing, which stretches out your meals and makes them feel bigger. Fiber also slows digestion and nutrient absorption, which delays hunger between meals — so you stay full longer on fewer calories.</p>
-              <p className="mt-2">It also keeps you regular. Constipation is common on a high-protein diet with reduced calories, and adequate fiber prevents it. Build most of your meals around vegetables or other high-fiber foods — legumes, fruit, whole grains, mushrooms.</p>
+              <p>Fiber isn't a macronutrient, but it's one of the most useful things you can prioritize on a cut, which is why it's on your numbers. Aim for at least <strong>14g per 1,000 calories</strong> you eat. Treat it as a floor, not a ceiling.</p>
+              <p className="mt-2">High-fiber foods make a deficit far easier to live with. They require more chewing, which stretches out your meals and makes them feel bigger. Fiber also slows digestion and nutrient absorption, which delays hunger between meals, so you stay full longer on fewer calories.</p>
+              <p className="mt-2">It also keeps you regular. Constipation is common on a high-protein diet with reduced calories, and adequate fiber prevents it. Build most of your meals around vegetables or other high-fiber foods: legumes, fruit, whole grains, mushrooms.</p>
             </QAItem>
             <QAItem question="Why do I need to update my numbers as I progress?">
               {isCut ? (
                 <p>As you cut, your body adapts. Maintenance drops, NEAT decreases, and your body becomes more efficient at the lower weight. The initial calorie target won't stay accurate forever.</p>
               ) : (
-                <p>As you gain weight, your maintenance rises — more bodyweight simply costs more calories to carry around. That means the surplus you started with slowly shrinks, and if you don't bump your intake your gains will stall. The initial calorie target won't stay accurate forever.</p>
+                <p>As you gain weight, your maintenance rises, because more bodyweight simply costs more calories to carry around. That means the surplus you started with slowly shrinks, and if you don't bump your intake your gains will stall. The initial calorie target won't stay accurate forever.</p>
               )}
               <p className="mt-2">{isCut ? 'Check in weekly with MacroMetric to keep your numbers calibrated.' : 'Check in monthly with MacroMetric to keep your numbers calibrated.'}</p>
             </QAItem>
@@ -1826,7 +1906,7 @@ const CheckInCodeScreen = ({ onDecoded, onManual, onBack }) => {
         <span className="text-xs font-semibold text-stone-400 tracking-widest uppercase">Check-in</span>
         <h2 className="mt-2 text-2xl font-bold text-stone-900">Paste your MacroMetric code</h2>
         <p className="text-stone-600 mt-2 text-sm">
-          Use the code from the end of your plan — or from your last check-in. MacroMetric pre-fills your current numbers, so you only enter this period's measurements. If your targets change, you'll get a fresh code to take to MealFrame.
+          Use the code from the end of your plan, or from your last check-in. MacroMetric pre-fills your current numbers, so you only enter this period's measurements. If your targets change, you'll get a fresh code to take to MealFrame.
         </p>
 
         <div className="mt-5">
@@ -1854,7 +1934,7 @@ const CheckInCodeScreen = ({ onDecoded, onManual, onBack }) => {
           I don't have my code — enter manually
         </SecondaryButton>
         <p className="text-xs text-stone-500 text-center mt-3">
-          Manual check-ins still work — they just can't generate a MealFrame code.
+          Manual check-ins still work. They just can't generate a MealFrame code.
         </p>
       </div>
     </Card>
@@ -1932,6 +2012,7 @@ const UnitsScreen = ({ onSelect, onBack }) => (
 
 const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
   const [tracked, setTracked] = useState(null);
+  const [firstCheckIn, setFirstCheckIn] = useState(null);
   const [currentTarget, setCurrentTarget] = useState(prefill.currentTarget || '');
   const [actualIntake, setActualIntake] = useState('');
   const [bwTwoWeeksAgo, setBwTwoWeeksAgo] = useState('');
@@ -1952,6 +2033,7 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
 
   const isValid =
     tracked !== null &&
+    firstCheckIn !== null &&
     currentTarget && parseInt(currentTarget) > 800 &&
     actualIntake && parseInt(actualIntake) > 500 &&
     bwTwoWeeksAgo && parseFloat(bwTwoWeeksAgo) > 30 &&
@@ -1964,6 +2046,7 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
     if (!isValid) return;
     onSubmit({
       tracked,
+      firstCheckIn,
       currentTarget: parseInt(currentTarget),
       actualIntake: parseInt(actualIntake),
       bwTwoWeeksAgo: units === 'metric' ? parseFloat(bwTwoWeeksAgo) : lbToKg(parseFloat(bwTwoWeeksAgo)),
@@ -1989,7 +2072,7 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
 
         {isPrefilled && (
           <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 mt-3">
-            Pre-filled from your MacroMetric code — just add this period's numbers below (edit anything that's changed).
+            Pre-filled from your MacroMetric code. Just add this period's numbers below (edit anything that's changed).
           </p>
         )}
 
@@ -2003,6 +2086,23 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
                   onClick={() => setTracked(opt.v)}
                   className={`p-3 rounded-lg border transition-colors ${
                     tracked === opt.v ? 'border-orange-500 bg-orange-50' : 'border-stone-200 hover:border-orange-500 hover:bg-orange-50'
+                  }`}
+                >
+                  <span className="font-medium text-stone-900 text-sm">{opt.l}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium text-stone-700">Is this your first check-in on this cut?</label>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {[{ v: true, l: 'Yes' }, { v: false, l: 'No' }].map((opt) => (
+                <button
+                  key={opt.l}
+                  onClick={() => setFirstCheckIn(opt.v)}
+                  className={`p-3 rounded-lg border transition-colors ${
+                    firstCheckIn === opt.v ? 'border-orange-500 bg-orange-50' : 'border-stone-200 hover:border-orange-500 hover:bg-orange-50'
                   }`}
                 >
                   <span className="font-medium text-stone-900 text-sm">{opt.l}</span>
@@ -2098,7 +2198,7 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
               <div className="font-medium text-stone-900 text-sm">Help MacroMetric be more accurate</div>
               <span className="text-[10px] font-semibold uppercase tracking-wide text-stone-400 border border-stone-200 rounded px-1.5 py-0.5">Optional</span>
             </div>
-            <div className="text-xs text-stone-500 mt-0.5">Unlock recomp detection — prevents being told to cut harder when you're already winning</div>
+            <div className="text-xs text-stone-500 mt-0.5">Unlock recomp detection, which prevents you being told to cut harder when you're already winning</div>
 
             <div className="space-y-4 mt-4 pl-3 border-l-2 border-orange-200">
               <div>
@@ -2156,6 +2256,9 @@ const CuttingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
 // CUTTING CHECK-IN LOGIC  (unchanged)
 // =====================================================
 
+// Reported intake further than this from the target counts as not following it.
+const INTAKE_OFF_TARGET_KCAL = 100;
+
 function processCuttingCheckIn(input, units = 'metric') {
   const wUnit = units === 'imperial' ? 'lb' : 'kg';
   const fmt = (kg) => units === 'imperial' ? kgToLb(kg).toFixed(2) : kg.toFixed(2);
@@ -2191,6 +2294,24 @@ function processCuttingCheckIn(input, units = 'metric') {
     };
   }
 
+  // Step 3b: Adherence check. If he ate off-target in the direction that
+  // explains the miss (over target and losing slow, or under and losing fast),
+  // the target isn't the problem — don't move it.
+  const intakeDiff = input.actualIntake - input.currentTarget;
+  const tooSlow = actualRate < input.targetRate;
+  if (Math.abs(intakeDiff) > INTAKE_OFF_TARGET_KCAL && (intakeDiff > 0) === tooSlow) {
+    return {
+      verdict: 'no_change',
+      reason: 'adherence',
+      message: `You averaged ${input.actualIntake} kcal against a target of ${input.currentTarget}, so we can't judge the target yet.`,
+      detail: `You lost ${fmt(actualRate)} ${wUnit}/week vs your target of ${fmt(input.targetRate)} ${wUnit}/week, but you also ate ${Math.abs(intakeDiff)} kcal ${intakeDiff > 0 ? 'over' : 'under'} your target, so we can't tell yet whether the target itself needs to move. Hit ${input.currentTarget} kcal for the next two weeks, then check in again.`,
+      newTarget: input.currentTarget,
+      newProtein: input.proteinTarget,
+      actualRate,
+      gap,
+    };
+  }
+
   // Step 4: Body recomp check (only if optional data provided AND losing slower)
   if (
     actualRate < input.targetRate &&
@@ -2204,7 +2325,7 @@ function processCuttingCheckIn(input, units = 'metric') {
       return {
         verdict: 'no_change',
         reason: 'recomp',
-        message: "Your scale isn't moving as fast as planned — but your waist is shrinking and your strength is rising. This is body recomposition: the best possible outcome of a cut.",
+        message: "Your scale isn't moving as fast as planned, but your waist is shrinking and your strength is rising. This is body recomposition: the best possible outcome of a cut.",
         detail: `You're losing fat and gaining muscle at the same time. The scale doesn't show it because muscle replaces some of the lost fat. Don't change a thing.`,
         newTarget: input.currentTarget,
         newProtein: input.proteinTarget,
@@ -2215,9 +2336,16 @@ function processCuttingCheckIn(input, units = 'metric') {
   }
 
   // Step 5: Calculate adjustment
-  const rawAdjustment = (gap * 7700) / 7;
-  const halfAdjustment = rawAdjustment / 2;
-  const cappedAdjustment = Math.min(Math.abs(halfAdjustment), 150) * Math.sign(halfAdjustment);
+  // Normally we ease in: half of what the math suggests, capped at 150 kcal.
+  // The FIRST check-in that shows a too-slow loss is different: it is the first
+  // real evidence the starting maintenance estimate was high, so it takes the
+  // full correction, capped at 300 kcal. (Too-fast stays gentle even then — the
+  // first two weeks of a cut include water loss that inflates the scale drop.)
+  const rawAdjustment = (gap * KCAL_PER_KG_LOST) / 7;
+  const fastCorrection = input.firstCheckIn === true && actualRate < input.targetRate;
+  const sizedAdjustment = fastCorrection ? rawAdjustment : rawAdjustment / 2;
+  const adjustmentCap = fastCorrection ? 300 : 150;
+  const cappedAdjustment = Math.min(Math.abs(sizedAdjustment), adjustmentCap) * Math.sign(sizedAdjustment);
 
   let newTarget;
   let adjustmentDirection;
@@ -2231,15 +2359,35 @@ function processCuttingCheckIn(input, units = 'metric') {
     adjustmentDirection = 'up';
   }
 
-  newTarget = roundUpTo50(newTarget);
+  newTarget = roundTo50(newTarget);
 
   // Step 6: Apply floor
-  const floor = input.height > 175 ? 2000 : 1800;
+  const floor = cutCalorieFloor(input.height);
   let floorApplied = false;
   if (newTarget < floor) {
     newTarget = floor;
     floorApplied = true;
   }
+
+  // Rounding or the floor can leave the target where it already is.
+  if (newTarget === input.currentTarget) {
+    return {
+      verdict: 'no_change',
+      reason: floorApplied ? 'floor' : 'on_track',
+      message: floorApplied
+        ? `You're losing slower than planned, but you're already at your ${floor} kcal floor.`
+        : "You're close enough to pace. No change. Keep going.",
+      detail: floorApplied
+        ? `You lost ${fmt(actualRate)} ${wUnit}/week vs your target of ${fmt(input.targetRate)} ${wUnit}/week. We don't take calories lower than this. To speed things up, add activity: more daily steps is the easiest lever.`
+        : `You lost ${fmt(actualRate)} ${wUnit}/week vs your target of ${fmt(input.targetRate)} ${wUnit}/week.`,
+      newTarget: input.currentTarget,
+      newProtein: input.proteinTarget,
+      actualRate,
+      gap,
+    };
+  }
+  // What the client sees is the change in the rounded target, not the raw math.
+  const appliedChange = Math.abs(newTarget - input.currentTarget);
 
   // Recalculate macros
   const newFat = roundToNearest5((newTarget * 0.35) / 9);
@@ -2247,11 +2395,13 @@ function processCuttingCheckIn(input, units = 'metric') {
 
   let message, detail;
   if (adjustmentDirection === 'down') {
-    message = `You're losing slower than planned. Reducing your target by ${Math.abs(Math.round(cappedAdjustment))} kcal/day.`;
-    detail = `You lost ${fmt(actualRate)} ${wUnit}/week vs your target of ${fmt(input.targetRate)} ${wUnit}/week. We're easing into the adjustment — half of what the math suggests, capped at 150 kcal. Don't expect overnight changes; cuts work over weeks, not days.`;
+    message = `You're losing slower than planned. Reducing your target by ${appliedChange} kcal/day.`;
+    detail = `You lost ${fmt(actualRate)} ${wUnit}/week vs your target of ${fmt(input.targetRate)} ${wUnit}/week. ${fastCorrection
+      ? "Your starting calories were an estimate, and your first two weeks show it was set a little high for you. This first correction is the full adjustment (capped at 300 kcal) so you get on pace quickly; later ones are smaller."
+      : "We're easing into the adjustment: half of what the math suggests, capped at 150 kcal."} Don't expect overnight changes; cuts work over weeks, not days.`;
   } else {
-    message = `You're losing faster than planned. Bumping your target up by ${Math.round(Math.abs(cappedAdjustment))} kcal/day.`;
-    detail = `You lost ${fmt(actualRate)} ${wUnit}/week vs your target of ${fmt(input.targetRate)} ${wUnit}/week. Aggressive cuts cost muscle — let's slow it down.`;
+    message = `You're losing faster than planned. Bumping your target up by ${appliedChange} kcal/day.`;
+    detail = `You lost ${fmt(actualRate)} ${wUnit}/week vs your target of ${fmt(input.targetRate)} ${wUnit}/week. Aggressive cuts cost muscle, so let's slow it down.`;
   }
 
   if (floorApplied) {
@@ -2269,12 +2419,12 @@ function processCuttingCheckIn(input, units = 'metric') {
     newCarbs,
     actualRate,
     gap,
-    adjustmentAmount: Math.round(Math.abs(cappedAdjustment)),
+    adjustmentAmount: appliedChange,
   };
 }
 
 // =====================================================
-// BULKING CHECK-IN  (logic untouched — never read archetype)
+// BULKING CHECK-IN  (never reads archetype)
 // `prefill` (optional) seeds current target, protein, and target monthly gain
 // (read from the code's rate field). All editable.
 // =====================================================
@@ -2286,12 +2436,14 @@ const BulkingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
   const [bwThisMonth, setBwThisMonth] = useState('');
   const [targetMonthlyGain, setTargetMonthlyGain] = useState(prefill.targetMonthlyGain || '');
   const [strengthUp, setStrengthUp] = useState(null);
+  const [firstCheckIn, setFirstCheckIn] = useState(null);
 
   const isPrefilled = !!prefill.currentTarget;
 
   const unitW = units === 'metric' ? 'kg' : 'lb';
 
   const isValid =
+    firstCheckIn !== null &&
     currentTarget && parseInt(currentTarget) > 800 &&
     proteinTarget && parseInt(proteinTarget) > 30 &&
     bwLastMonth && parseFloat(bwLastMonth) > 30 &&
@@ -2302,6 +2454,7 @@ const BulkingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
   const handleSubmit = () => {
     if (!isValid) return;
     onSubmit({
+      firstCheckIn,
       currentTarget: parseInt(currentTarget),
       proteinTarget: parseInt(proteinTarget),
       bwLastMonth: units === 'metric' ? parseFloat(bwLastMonth) : lbToKg(parseFloat(bwLastMonth)),
@@ -2318,16 +2471,33 @@ const BulkingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
         <span className="text-xs font-semibold text-stone-400 tracking-widest uppercase">Monthly check-in</span>
         <h2 className="mt-2 text-2xl font-bold text-stone-900">Bulking check-in</h2>
         <p className="text-stone-600 mt-2 text-sm">
-          Bulking moves slowly. We check monthly because weekly bulking signals are too noisy to act on. We don't need precise calorie tracking — your weight and strength tell us what we need to know.
+          Bulking moves slowly. We check monthly because weekly bulking signals are too noisy to act on. We don't need precise calorie tracking. Your weight and strength tell us what we need to know.
         </p>
 
         {isPrefilled && (
           <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 mt-3">
-            Pre-filled from your MacroMetric code — just add this month's numbers below (edit anything that's changed).
+            Pre-filled from your MacroMetric code. Just add this month's numbers below (edit anything that's changed).
           </p>
         )}
 
         <div className="space-y-4 mt-5">
+          <div>
+            <label className="text-sm font-medium text-stone-700">Is this your first check-in on this bulk?</label>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {[{ v: true, l: 'Yes' }, { v: false, l: 'No' }].map((opt) => (
+                <button
+                  key={opt.l}
+                  onClick={() => setFirstCheckIn(opt.v)}
+                  className={`p-3 rounded-lg border transition-colors ${
+                    firstCheckIn === opt.v ? 'border-orange-500 bg-orange-50' : 'border-stone-200 hover:border-orange-500 hover:bg-orange-50'
+                  }`}
+                >
+                  <span className="font-medium text-stone-900 text-sm">{opt.l}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div>
             <label className="text-sm font-medium text-stone-700">Your current daily calorie target (kcal)</label>
             <input
@@ -2415,7 +2585,12 @@ const BulkingCheckInScreen = ({ onSubmit, units, onBack, prefill = {} }) => {
 };
 
 // =====================================================
-// BULKING CHECK-IN LOGIC  (unchanged)
+// BULKING CHECK-IN LOGIC
+// The cases (which combinations of gain and strength trigger a change) are the
+// original ones. The SIZE of a change follows the miss: the kcal/day that the
+// missing or excess monthly gain is worth at BULK_KCAL_PER_KG_GAINED, capped at
+// 300. One exception: a too-fast FIRST month is halved and capped at 150,
+// because the first month of a bulk adds water and food weight to the scale.
 // =====================================================
 
 function processBulkingCheckIn(input, units = 'metric') {
@@ -2425,6 +2600,11 @@ function processBulkingCheckIn(input, units = 'metric') {
   const actualGain = input.bwThisMonth - input.bwLastMonth;
   const target = input.targetMonthlyGain;
   const tooFast = 1.5 * target;
+
+  // kcal/day that the missed (or excess) monthly gain is worth.
+  const gapKcal = (Math.abs(actualGain - target) * BULK_KCAL_PER_KG_GAINED) / DAYS_PER_MONTH;
+  const easeIn = input.firstCheckIn === true && actualGain > tooFast;
+  const step = easeIn ? Math.min(gapKcal / 2, 150) : Math.min(gapKcal, 300);
 
   let verdict, reason, message, detail, newTarget = input.currentTarget;
 
@@ -2439,15 +2619,17 @@ function processBulkingCheckIn(input, units = 'metric') {
     verdict = 'change';
     reason = 'up';
     message = "Time to eat more. Your body isn't getting enough fuel to grow.";
-    detail = `You gained ${fmt(actualGain)} ${wUnit} vs your target of ${fmt(target)} ${wUnit}, and strength hasn't moved. Bumping calories up by 150/day.`;
-    newTarget = roundUpTo50(input.currentTarget + 150);
+    newTarget = roundTo50(input.currentTarget + step);
+    detail = `You gained ${fmt(actualGain)} ${wUnit} vs your target of ${fmt(target)} ${wUnit}, and strength hasn't moved. Bumping calories up by ${newTarget - input.currentTarget}/day, which is what the missing gain is worth.`;
   } else if (actualGain > tooFast) {
     // CASE 3
     verdict = 'change';
     reason = 'down';
-    message = "You're outpacing the muscle-building rate your body can use. The extra calories are going to fat.";
-    detail = `You gained ${fmt(actualGain)} ${wUnit} vs your target of ${fmt(target)} ${wUnit}. Cutting back by 150/day to keep the bulk lean.`;
-    newTarget = roundUpTo50(input.currentTarget - 150);
+    message = easeIn
+      ? "You're gaining faster than planned. Trimming your target a little."
+      : "You're outpacing the muscle-building rate your body can use. The extra calories are going to fat.";
+    newTarget = roundTo50(input.currentTarget - step);
+    detail = `You gained ${fmt(actualGain)} ${wUnit} vs your target of ${fmt(target)} ${wUnit}. Cutting back by ${input.currentTarget - newTarget}/day to keep the bulk lean.${easeIn ? " That's half of what the math suggests: the first month of a bulk adds water and food weight to the scale, so some of this isn't fat." : ''}`;
   } else if (actualGain >= target && actualGain <= tooFast && input.strengthUp === false) {
     // CASE 4
     verdict = 'no_change';
@@ -2465,6 +2647,14 @@ function processBulkingCheckIn(input, units = 'metric') {
     verdict = 'no_change';
     reason = 'on_track';
     message = "No change needed.";
+    detail = `You gained ${fmt(actualGain)} ${wUnit} vs your target of ${fmt(target)} ${wUnit}.`;
+  }
+
+  // A miss too small to move the rounded target is not a change.
+  if (verdict === 'change' && newTarget === input.currentTarget) {
+    verdict = 'no_change';
+    reason = 'on_track';
+    message = "You're close enough to pace. No change. Keep going.";
     detail = `You gained ${fmt(actualGain)} ${wUnit} vs your target of ${fmt(target)} ${wUnit}.`;
   }
 
@@ -2517,7 +2707,7 @@ const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart
   };
 
   const footerNote = isCut
-    ? "Come back next week with another two weeks of data. Most weeks should produce 'no change' — that's the system working."
+    ? "Come back next week with another two weeks of data. Most weeks should produce 'no change'. That's the system working."
     : "Come back in a month. Patience is the dominant virtue of a clean lean bulk.";
 
   return (
@@ -2532,9 +2722,10 @@ const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart
               {result.reason === 'on_track' && "You're on track."}
               {result.reason === 'recomp' && "You're recomping."}
               {result.reason === 'accuracy' && "Track better, come back."}
+              {result.reason === 'adherence' && "Hit your target first."}
               {result.reason === 'strength_lag' && "Hold the line."}
               {result.reason === 'weight_lag' && "Hold the line."}
-              {!['on_track', 'recomp', 'accuracy', 'strength_lag', 'weight_lag'].includes(result.reason) && "No change needed."}
+              {!['on_track', 'recomp', 'accuracy', 'adherence', 'strength_lag', 'weight_lag'].includes(result.reason) && "No change needed."}
             </h2>
             <p className="text-stone-700 mt-3 leading-relaxed">{result.message}</p>
             {result.detail && (
@@ -2595,7 +2786,7 @@ const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart
             <div className="border-t border-stone-200 my-6"></div>
             <div className="bg-stone-900 rounded-xl p-5 text-center">
               <h4 className="text-xs font-semibold text-orange-400 uppercase tracking-wider">Your Updated MacroMetric Code</h4>
-              <p className="text-stone-400 text-xs mt-1">Your numbers changed — paste this into MealFrame to refresh your meal structure and examples. Keep it for your next check-in, too.</p>
+              <p className="text-stone-400 text-xs mt-1">Your numbers changed. Paste this into MealFrame to refresh your meal structure and examples. Keep it for your next check-in, too.</p>
               <div className="mt-3 bg-stone-800 border border-stone-700 rounded-lg px-3 py-3">
                 <code className="text-orange-300 text-xs break-all leading-relaxed">{updatedCode}</code>
               </div>
@@ -2631,7 +2822,7 @@ const CheckInResultScreen = ({ result, direction, units, ingestedPlan, onRestart
         {/* No change → existing MealFrame plan is still current */}
         {isNoChange && ingestedPlan && (
           <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-4 text-xs text-stone-500 text-center leading-relaxed">
-            Your numbers didn't change, so your current MealFrame structure is still on point — no refresh needed.
+            Your numbers didn't change, so your current MealFrame structure is still on point. No refresh needed.
           </div>
         )}
 
@@ -2742,9 +2933,10 @@ export default function App() {
     setUnits(mm1.units);
     setCheckInDirection(mm1.direction);
 
-    const toDispW = (kg) => mm1.units === 'imperial'
-      ? String(Math.round(kgToLb(kg) * 10) / 10)
-      : String(Math.round(kg * 10) / 10);
+    const toDispW = (kg, dp = 1) => {
+      const p = 10 ** dp;
+      return String(Math.round((mm1.units === 'imperial' ? kgToLb(kg) : kg) * p) / p);
+    };
 
     if (mm1.direction === 'cut') {
       const weeklyLossKg = mm1.weight * mm1.rate; // rate is fractional bw / week
@@ -2752,7 +2944,7 @@ export default function App() {
         currentTarget: String(mm1.target),
         proteinTarget: String(mm1.protein),
         height: mm1.units === 'imperial' ? String(Math.round(mm1.height / 2.54)) : String(mm1.height),
-        targetRate: toDispW(weeklyLossKg),
+        targetRate: toDispW(weeklyLossKg, 2),
       });
       setScreen('checkin_cut');
     } else {
