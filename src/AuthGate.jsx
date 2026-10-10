@@ -41,7 +41,7 @@ const Shell = ({ appName, children }) => (
     className="min-h-screen bg-stone-50 flex flex-col"
     style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}
   >
-    <header className="w-full px-6 py-4 flex items-center justify-between border-b border-stone-200 bg-white">
+    <header className="w-full px-5 sm:px-6 py-4 flex items-center justify-between border-b border-stone-200 bg-white">
       <div className="flex items-center gap-2.5">
         <Logo size={32} />
         <span className="font-semibold text-stone-900 tracking-tight">ShredSmart</span>
@@ -49,9 +49,9 @@ const Shell = ({ appName, children }) => (
       <span className="text-xs text-stone-500 tracking-wider">{appName}</span>
     </header>
 
-    <main className="flex-1 flex items-center justify-center px-4 py-8">{children}</main>
+    <main className="flex-1 flex items-center justify-center bg-white sm:bg-transparent sm:px-4 sm:py-8">{children}</main>
 
-    <footer className="w-full px-6 py-4 border-t border-stone-200 bg-white text-xs text-stone-500 flex justify-between">
+    <footer className="w-full px-5 sm:px-6 py-4 border-t border-stone-200 bg-white text-xs text-stone-500 flex justify-between">
       <span>ShredSmart</span>
       <span>by Radu Antoniu</span>
     </footer>
@@ -59,7 +59,7 @@ const Shell = ({ appName, children }) => (
 );
 
 const Card = ({ children }) => (
-  <div className="bg-white border border-stone-200 rounded-2xl shadow-sm p-8 max-w-xl w-full">
+  <div className="bg-white border-stone-200 sm:border sm:rounded-2xl sm:shadow-sm px-5 py-6 sm:p-8 max-w-xl w-full">
     {children}
   </div>
 );
